@@ -1,0 +1,20 @@
+# cargo-audit config. Real vulnerabilities (not the "unmaintained"/"unsound"
+# warnings, which cargo-audit already treats as non-fatal) are ignored here
+# only with a specific, reviewed justification — never blanket-suppressed.
+#
+# Re-run `cargo audit` (no args) periodically and re-check whether these can
+# be dropped from the ignore list.
+
+[advisories]
+ignore = [
+    # hickory-proto / hickory-resolver, pulled in transitively and only
+    # optionally via libp2p-dns (rust-libp2p's DNS multiaddr resolution).
+    # Nothing in this workspace uses hickory directly, and neither directory-server
+    # nor the P2P transport parses DNS responses from untrusted servers as a
+    # *server* would — the exposure here is client-side hostname resolution
+    # only. RUSTSEC-2026-0118 has no fixed upgrade yet; RUSTSEC-2026-0119's
+    # fix (hickory-proto >=0.26.1) is blocked until libp2p-dns's own manifest
+    # allows it (0.25 -> 0.26 is a semver-major bump for a 0.x crate).
+    "RUSTSEC-2026-0118",
+    "RUSTSEC-2026-0119",
+]

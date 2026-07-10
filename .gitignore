@@ -1,0 +1,13 @@
+/target
+**/target
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+
+# local dev artifacts — never commit real keys, db files, or app data
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+.env

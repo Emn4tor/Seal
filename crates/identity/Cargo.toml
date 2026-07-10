@@ -1,0 +1,24 @@
+[package]
+name = "identity"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+wire-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+vodozemac = "0.10"
+keyring = "4"
+rand = "0.8"
+base64 = "0.22"
+zeroize = "1"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+ed25519-dalek = "2"

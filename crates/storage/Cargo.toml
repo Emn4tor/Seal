@@ -1,0 +1,25 @@
+[package]
+name = "storage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+identity.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Plain SQLite — no SQLCipher/OpenSSL. Sensitive columns (identity/session
+# pickles, message bodies) are individually encrypted at the application
+# layer instead (see crypto.rs); this keeps the whole workspace on one
+# pure-Rust SQLite build with no C-toolchain/OpenSSL dependency anywhere,
+# which matters a lot for cross-platform Tauri packaging later.
+rusqlite = { version = "0.40", features = ["bundled"] }
+chacha20poly1305 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"

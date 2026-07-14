@@ -1,0 +1,19 @@
+[package]
+name = "audio"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "audio"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror.workspace = true
+# Pure Rust, no vendored/system C library — deliberately chosen over an
+# Opus binding (see docs/THREAT_MODEL.md and the Phase 3 plan) to keep this
+# workspace's existing bias toward dependency-free builds.
+rubato = "4"
+rustfft = "6"
+
+[dev-dependencies]

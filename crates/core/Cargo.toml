@@ -1,0 +1,46 @@
+[package]
+name = "p2p-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "p2p_core"
+path = "src/lib.rs"
+
+[dependencies]
+wire-proto.workspace = true
+identity.workspace = true
+storage.workspace = true
+net.workspace = true
+crypto-session.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bincode.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["net", "time"] }
+
+libp2p = { version = "0.56", features = ["gossipsub", "autonat"] }
+libp2p-stream = "0.4.0-alpha"
+futures = "0.3"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+
+audio.workspace = true
+# Real-time-safe SPSC ring buffers bridging cpal's real-time audio-device
+# callback threads with the async actor world — never anything blocking
+# (locks, allocation) on the callback side.
+rtrb = "0.3"
+# Binds directly to CoreAudio/WASAPI/ALSA for mic capture / speaker
+# playback; no vendored C build (unlike e.g. rusqlite's `bundled` feature,
+# already in this workspace, which does compile vendored C).
+cpal = "0.18"
+
+[dev-dependencies]
+tempfile = "3"
+base64 = "0.22"
+directory-server = { path = "../directory-server" }
+axum = "0.8"
+tracing-subscriber = { workspace = true }

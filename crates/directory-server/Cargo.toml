@@ -1,0 +1,42 @@
+[package]
+name = "directory-server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "directory-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "directory-admin"
+path = "src/bin/directory_admin.rs"
+
+[dependencies]
+wire-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "fs"] }
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+# Same rusqlite version as `storage` — Cargo's `links = "sqlite3"` constraint
+# means only one native SQLite build can exist across the whole workspace
+# resolution, so both crates must agree on the exact same version+features.
+rusqlite = { version = "0.40", features = ["bundled"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+clap = { version = "4", features = ["derive", "env"] }
+ureq = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = "3"

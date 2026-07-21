@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+@import "@fontsource/space-grotesk/latin-500.css";
+@import "@fontsource/space-grotesk/latin-600.css";
+@import "@fontsource/space-grotesk/latin-700.css";
+@import "@fontsource/inter/latin-400.css";
+@import "@fontsource/inter/latin-500.css";
+@import "@fontsource/inter/latin-600.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
+
+/*
+  Palette concept: a cipher room at night, not a hacker terminal — a
+  blue-black "ink" ground (not neutral black) with two metallic accents:
+  warm brass (the wax-seal / verified-identity color) and cool verdigris
+  (the "channel is live and encrypted" color). Deliberately not a single
+  neon accent on near-black.
+*/
+@theme {
+  --color-ink: #0e1116;
+  --color-surface: #161b22;
+  --color-surface-raised: #1c232d;
+  --color-border: #262d38;
+  --color-text: #e8e3d8;
+  --color-text-muted: #8a93a3;
+  --color-text-faint: #5b6472;
+
+  --color-brass: #c9a15c;
+  --color-brass-dim: #8a744a;
+  --color-brass-wash: #2a2419;
+
+  --color-verdigris: #4f8f86;
+  --color-verdigris-dim: #3a6b64;
+  --color-verdigris-wash: #16221f;
+
+  --color-danger: #b0554f;
+  --color-danger-dim: #7a3b37;
+  --color-danger-wash: #241615;
+
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+::selection {
+  background: var(--color-brass-dim);
+  color: var(--color-ink);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brass);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* The cipher-seal signature element: concentric rings that counter-rotate
+   while a connection/session is establishing, then settle into alignment
+   once it locks in. */
+@keyframes seal-spin-cw {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes seal-spin-ccw {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(-360deg);
+  }
+}
+.seal-ring-outer.is-connecting {
+  animation: seal-spin-cw 3.2s linear infinite;
+}
+.seal-ring-inner.is-connecting {
+  animation: seal-spin-ccw 2.4s linear infinite;
+}

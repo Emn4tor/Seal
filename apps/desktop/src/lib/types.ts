@@ -1,0 +1,86 @@
+export interface Contact {
+  user_id: string;
+  display_name: string;
+  verified: boolean;
+}
+
+export interface Attachment {
+  filename: string;
+  mime_type: string;
+  size: number;
+  exif_stripped: boolean;
+  data_base64: string;
+}
+
+export interface ExifField {
+  tag: string;
+  value: string;
+}
+
+export interface Message {
+  sender_user_id: string;
+  body: string;
+  sent_at: number;
+  attachment: Attachment | null;
+}
+
+export interface GroupMember {
+  user_id: string;
+  role: string;
+}
+
+export type ChannelKind = "text" | "voice";
+
+export interface Channel {
+  channel_id: string;
+  name: string;
+  kind: ChannelKind;
+  position: number;
+}
+
+export interface Group {
+  group_id: string;
+  name: string;
+  roster_version: number;
+  members: GroupMember[];
+  channels: Channel[];
+}
+
+export type NetworkStatus = "public" | "private" | "unknown";
+
+export type ChatEvent =
+  | { type: "direct_message"; from: string; body: string; attachment: Attachment | null }
+  | {
+      type: "group_message";
+      group_id: string;
+      channel_id: string;
+      from: string;
+      body: string;
+      attachment: Attachment | null;
+    }
+  | { type: "group_key_received"; group_id: string; from: string }
+  | { type: "network_status"; status: NetworkStatus }
+  | {
+      type: "voice_participants_changed";
+      group_id: string;
+      channel_id: string;
+      user_ids: string[];
+    };
+
+export type Selection =
+  | { kind: "dm"; userId: string }
+  | { kind: "group"; groupId: string; channelId: string }
+  | null;
+
+export interface AccountSummary {
+  account_id: string;
+  user_id: string;
+  display_name: string;
+}
+
+/** Mirrors `accounts::BootDecision` on the Rust side — what to show at startup. */
+export type BootDecision =
+  | { action: "needsFirstAccount" }
+  | { action: "needsPicker"; accounts: AccountSummary[] }
+  | { action: "resume"; account: AccountSummary }
+  | { action: "createWithName"; display_name: string };

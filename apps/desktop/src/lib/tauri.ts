@@ -1,0 +1,84 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  AccountSummary,
+  Attachment,
+  BootDecision,
+  ChannelKind,
+  ChatEvent,
+  Contact,
+  ExifField,
+  Group,
+  Message,
+} from "./types";
+
+/** Mirrors `server_config::EMBEDDED_SENTINEL` on the Rust side. */
+export const EMBEDDED_SERVER_SENTINEL = "embedded";
+
+export interface AccountsState {
+  accounts: AccountSummary[];
+  active_account_id: string | null;
+}
+
+export const api = {
+  getOfficialServerUrl: () => invoke<string | null>("get_official_server_url"),
+  getSavedServerUrl: () => invoke<string | null>("get_saved_server_url"),
+  startBackend: (serverUrl: string) => invoke<string>("start_backend", { serverUrl }),
+  saveServerUrlForNextLaunch: (serverUrl: string) =>
+    invoke<void>("save_server_url_for_next_launch", { serverUrl }),
+  resolveBootAccount: () => invoke<BootDecision>("resolve_boot_account"),
+  listAccounts: () => invoke<AccountsState>("list_accounts"),
+  createAccount: (serverUrl: string, displayName: string) =>
+    invoke<AccountSummary>("create_account", { serverUrl, displayName }),
+  resumeAccount: (serverUrl: string, accountId: string) =>
+    invoke<AccountSummary>("resume_account", { serverUrl, accountId }),
+  renameAccount: (newDisplayName: string) =>
+    invoke<void>("rename_account", { newDisplayName }),
+  removeAccount: (accountId: string) => invoke<void>("remove_account", { accountId }),
+  addContact: (userId: string) => invoke<void>("add_contact", { userId }),
+  listContacts: () => invoke<Contact[]>("list_contacts"),
+  sendDirectMessage: (peerUserId: string, body: string, attachment: Attachment | null) =>
+    invoke<void>("send_direct_message", { peerUserId, body, attachment }),
+  listMessages: (conversationId: string) => invoke<Message[]>("list_messages", { conversationId }),
+  createGroup: (name: string) => invoke<Group>("create_group", { name }),
+  inviteToGroup: (groupId: string, memberUserId: string) =>
+    invoke<Group>("invite_to_group", { groupId, memberUserId }),
+  createChannel: (groupId: string, name: string, kind: ChannelKind) =>
+    invoke<Group>("create_channel", { groupId, name, kind }),
+  sendGroupMessage: (
+    groupId: string,
+    channelId: string,
+    body: string,
+    attachment: Attachment | null,
+  ) => invoke<void>("send_group_message", { groupId, channelId, body, attachment }),
+  listGroups: () => invoke<Group[]>("list_groups"),
+  joinVoiceChannel: (groupId: string, channelId: string) =>
+    invoke<void>("join_voice_channel", { groupId, channelId }),
+  leaveVoiceChannel: () => invoke<void>("leave_voice_channel"),
+  setVoiceChangerEnabled: (enabled: boolean) =>
+    invoke<void>("set_voice_changer_enabled", { enabled }),
+  setMicMuted: (muted: boolean) => invoke<void>("set_mic_muted", { muted }),
+  getVoiceParticipants: () => invoke<string[]>("get_voice_participants"),
+  setMicThresholdDb: (db: number) => invoke<void>("set_mic_threshold_db", { db }),
+  setHearSelf: (enabled: boolean) => invoke<void>("set_hear_self", { enabled }),
+  getVoiceSpeakingParticipants: () => invoke<string[]>("get_voice_speaking_participants"),
+  panicPurge: () => invoke<void>("panic_purge"),
+  pickAttachment: (stripExif: boolean) =>
+    invoke<Attachment | null>("pick_attachment", { stripExif }),
+  getImageExif: (dataBase64: string) =>
+    invoke<ExifField[]>("get_image_exif", { dataBase64 }),
+  saveAttachment: (dataBase64: string, suggestedFilename: string) =>
+    invoke<boolean>("save_attachment", { dataBase64, suggestedFilename }),
+};
+
+export function onChatEvent(handler: (event: ChatEvent) => void): Promise<UnlistenFn> {
+  return listen<ChatEvent>("chat-event", (e) => handler(e.payload));
+}
+
+export function onGroupsUpdated(handler: () => void): Promise<UnlistenFn> {
+  return listen("groups-updated", () => handler());
+}
+
+export function onContactsUpdated(handler: () => void): Promise<UnlistenFn> {
+  return listen("contacts-updated", () => handler());
+}

@@ -1,15 +1,111 @@
-# Seal
+<div align="center">
+  <a href="https://github.com/Emn4tor/Seal">
+    <img src="docs/assets/logo.png" width="112" height="112" alt="Seal logo — concentric brass and verdigris rings on an ink background" />
+  </a>
 
-A peer-to-peer, end-to-end encrypted chat app. Messages travel directly between
-peers over libp2p and are encrypted with the Signal-style Olm/Megolm protocols
-(via [vodozemac](https://github.com/matrix-org/vodozemac)) before they ever
-leave your device. The only server involved is a small directory that helps
-peers find each other's current address. It never sees message content, and
-it's purgeable in one command.
+  <h1>Seal</h1>
+
+  <p><em>Peer-to-peer, end-to-end encrypted chat.<br />No inbox. No account to recover. Nobody's listening — not even us.</em></p>
+
+  <p><a href="https://github.com/Emn4tor/Seal">github.com/Emn4tor/Seal</a></p>
+
+  <p>
+    <img src="https://img.shields.io/badge/rust-1.97+-c9a15c?style=flat-square&labelColor=0e1116&logo=rust&logoColor=e8e3d8" alt="Rust: 1.97+" />
+    <img src="https://img.shields.io/badge/tauri-2.11.5-4f8f86?style=flat-square&labelColor=0e1116&logo=tauri&logoColor=e8e3d8" alt="Tauri: 2.11.5" />
+    <img src="https://img.shields.io/badge/react-19.2-c9a15c?style=flat-square&labelColor=0e1116&logo=react&logoColor=e8e3d8" alt="React: 19.2" />
+    <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-4f8f86?style=flat-square&labelColor=0e1116" alt="Platforms: macOS, Linux, Windows" />
+    <img src="https://img.shields.io/badge/encryption-Olm%20%2F%20Megolm-c9a15c?style=flat-square&labelColor=0e1116" alt="Encryption: Olm / Megolm" />
+    <img src="https://img.shields.io/badge/server%20storage-none-4f8f86?style=flat-square&labelColor=0e1116" alt="Server-side message storage: none" />
+  </p>
+  <p>
+    <a href="https://github.com/Emn4tor/Seal/stargazers"><img src="https://img.shields.io/github/stars/Emn4tor/Seal?style=flat-square&color=c9a15c&labelColor=0e1116" alt="GitHub stars" /></a>
+    <a href="https://github.com/Emn4tor/Seal/network/members"><img src="https://img.shields.io/github/forks/Emn4tor/Seal?style=flat-square&color=4f8f86&labelColor=0e1116" alt="GitHub forks" /></a>
+    <a href="https://github.com/Emn4tor/Seal/issues"><img src="https://img.shields.io/github/issues/Emn4tor/Seal?style=flat-square&color=c9a15c&labelColor=0e1116" alt="GitHub issues" /></a>
+    <a href="https://github.com/Emn4tor/Seal/commits"><img src="https://img.shields.io/github/last-commit/Emn4tor/Seal?style=flat-square&color=4f8f86&labelColor=0e1116" alt="GitHub last commit" /></a>
+    <a href="https://github.com/Emn4tor/Seal"><img src="https://img.shields.io/github/repo-size/Emn4tor/Seal?style=flat-square&color=c9a15c&labelColor=0e1116" alt="GitHub repo size" /></a>
+  </p>
+</div>
+
+Messages travel directly between peers over libp2p and are encrypted with the
+Signal-style Olm/Megolm protocols (via
+[vodozemac](https://github.com/matrix-org/vodozemac)) before they ever leave
+your device. The only server involved is a small directory that helps peers
+find each other's current address. It never sees message content, and it's
+purgeable in one command.
 
 See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) and
 [`docs/SECURITY.md`](docs/SECURITY.md) for what's actually protected against
 and how.
+
+## Contents
+
+- [Screenshots](#screenshots)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Project layout](#project-layout)
+- [1. Prerequisites](#1-prerequisites)
+- [2. Building](#2-building)
+- [3. Running it in dev mode](#3-running-it-in-dev-mode)
+- [4. Testing](#4-testing)
+- [5. Backend (directory server) setup](#5-backend-directory-server-setup)
+- [6. Using the app](#6-using-the-app)
+
+---
+
+## Screenshots
+
+<div align="center">
+
+**First run** — pick a name; nothing else to set up.
+
+<img src="docs/screenshots/onboarding.png" width="820" alt="Seal's first-run screen: an explanation of the encryption model next to a display-name form, with a launch-at-login toggle" />
+
+<br /><br />
+
+**Conversations** — the group rail, contact list, and an end-to-end encrypted chat pane.
+
+<img src="docs/screenshots/chat.png" width="820" alt="A direct-message conversation in Seal, showing the group rail, contact list, and end-to-end encrypted chat pane" />
+
+<br /><br />
+
+**Settings** — mic sensitivity, push-to-talk, launch-at-login, network reachability.
+
+<img src="docs/screenshots/settings.png" width="820" alt="Seal's settings panel: mic sensitivity, push-to-talk, launch-at-login, and network reachability" />
+
+</div>
+
+## Features
+
+- **End-to-end encrypted, always** — every message is sealed with Olm (1:1)
+  or Megolm (groups) before it ever leaves your device, using
+  [vodozemac](https://github.com/matrix-org/vodozemac)'s Double-Ratchet-style
+  scheme: every message gets its own key.
+- **No inbox, ever** — messages travel over a direct peer-to-peer connection
+  ([libp2p](https://libp2p.io): QUIC/TCP + Noise, with relay and
+  hole-punching for NATs). If the recipient is offline, the message waits
+  locally and retries — it's never queued on anyone else's infrastructure.
+- **A directory, not a database** — the one server involved
+  (`crates/directory-server`) maps a user ID to a current network address
+  and nothing else. It's structurally incapable of reading message content:
+  its `Cargo.toml` doesn't even depend on the crates that know how.
+- **Multiple accounts, one device** — fully separate identities (keys,
+  contacts, messages) that you can switch between without restarting.
+- **Groups with real membership changes** — text and voice channels per
+  group; removing someone rotates the group's key so they can't read
+  anything sent afterward.
+- **Voice, built in** — push-to-talk on a system-wide shortcut (works from
+  any app, not just Seal), adjustable mic sensitivity, and an optional
+  voice changer.
+- **Attachments without the metadata** — EXIF data (GPS location,
+  camera/device info) is stripped from images before they're sent, on by
+  default.
+- **A real panic button** — Settings → Data & Privacy instantly and
+  irreversibly deletes every key, contact, and message on this device, with
+  zero effect on anyone you've talked to.
+- **Launch at login, if you want it** — on by default, a toggle away in
+  Settings.
+- **One codebase, three platforms** — native windows on macOS, Windows, and
+  Linux, via [Tauri](https://tauri.app).
 
 ## How it works
 
@@ -97,7 +193,8 @@ Common to all platforms:
 - [Rust](https://rustup.rs) (stable channel; install via `rustup`, not your OS package manager)
 - [Node.js](https://nodejs.org) 20+ and npm
 
-### macOS
+<details>
+<summary><strong>macOS</strong></summary>
 
 ```sh
 xcode-select --install
@@ -106,7 +203,10 @@ xcode-select --install
 That's it. Xcode Command Line Tools provide both the C compiler and the
 frameworks Tauri's macOS backend (WKWebView-based) needs.
 
-### Linux
+</details>
+
+<details>
+<summary><strong>Linux</strong></summary>
 
 Install a C compiler, `pkg-config`, and the WebKitGTK/AppIndicator dev
 packages Tauri's Linux backend links against.
@@ -139,7 +239,10 @@ missing `.pc` file, check the
 [current Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/)
 for your distro.)
 
-### Windows
+</details>
+
+<details>
+<summary><strong>Windows</strong></summary>
 
 1. Install the **Microsoft C++ Build Tools** (Visual Studio Installer →
    "Desktop development with C++" workload), needed both for Tauri's native
@@ -148,6 +251,8 @@ for your distro.)
 3. **WebView2**: already present on Windows 11 and most up-to-date Windows
    10 installs; if not, Tauri's build will prompt you to install the
    Evergreen runtime.
+
+</details>
 
 ---
 
@@ -408,6 +513,9 @@ directory instance; it's how they look each other up in the first place.
 
 ### Running it as a real service (systemd)
 
+<details>
+<summary>Show the systemd unit + notes</summary>
+
 ```ini
 # /etc/systemd/system/seal-directory.service
 [Unit]
@@ -449,7 +557,12 @@ Notes:
 - Put the admin token in a root-only-readable `EnvironmentFile`, not directly
   in the unit file (unit files are often world-readable).
 
+</details>
+
 ### TLS via a reverse proxy
+
+<details>
+<summary>Show the Caddy / nginx config</summary>
 
 [Caddy](https://caddyserver.com) gets you automatic HTTPS with the least
 config:
@@ -471,6 +584,8 @@ Firewall-wise: only the public port needs to be reachable from outside
 should never be reachable from outside; reach it over SSH port-forwarding
 (`ssh -L 8090:127.0.0.1:8090 your-server`) when you need to run a purge
 remotely.
+
+</details>
 
 ### Purging it
 

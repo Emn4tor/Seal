@@ -11,6 +11,7 @@ import { MemberList } from "./components/MemberList";
 import { Modal } from "./components/Modal";
 import { CreateChannelModal } from "./components/CreateChannelModal";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { Splash } from "./components/Splash";
 import { TutorialWizard } from "./components/TutorialWizard";
 import { CipherSeal, type SealStatus } from "./components/CipherSeal";
 import { VoiceCallPanel } from "./components/VoiceCallPanel";
@@ -41,6 +42,7 @@ function isConversationOpen(conversationId: string): boolean {
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("loading");
+  const [splashDone, setSplashDone] = useState(false);
   const [bootError, setBootError] = useState<string | null>(null);
   const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
@@ -341,6 +343,10 @@ export default function App() {
     await api.panicPurge();
     setShowSettings(false);
     await afterAccountRemoved();
+  }
+
+  if (!splashDone) {
+    return <Splash onFinished={() => setSplashDone(true)} />;
   }
 
   if (phase === "loading") {

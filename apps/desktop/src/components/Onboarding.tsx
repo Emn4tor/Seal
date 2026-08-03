@@ -1,6 +1,7 @@
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { CipherSeal } from "./CipherSeal";
+import { getAutostartEnabled, saveAutostartEnabled, syncAutostart } from "../lib/autostart";
 
 interface OnboardingProps {
   /** "first" is this device's very first account; "add" is an additional
@@ -29,6 +30,7 @@ export function Onboarding({ mode = "first", onSubmit, onCancel }: OnboardingPro
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [autostart, setAutostart] = useState(getAutostartEnabled);
   const isAdd = mode === "add";
 
   async function handleSubmit(e: FormEvent) {
@@ -38,6 +40,10 @@ export function Onboarding({ mode = "first", onSubmit, onCancel }: OnboardingPro
     setError(null);
     try {
       await onSubmit(name.trim());
+      if (!isAdd) {
+        saveAutostartEnabled(autostart);
+        syncAutostart(autostart);
+      }
     } catch (err) {
       setError(String(err));
       setBusy(false);
@@ -84,6 +90,28 @@ export function Onboarding({ mode = "first", onSubmit, onCancel }: OnboardingPro
               placeholder="What should people call you?"
               className="w-full rounded-md border border-border bg-surface px-3.5 py-2.5 text-[15px] text-text placeholder:text-text-faint focus:border-brass focus:outline-none"
             />
+
+            {!isAdd && (
+              <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-border bg-surface px-3.5 py-3">
+                <div>
+                  <p className="text-sm font-medium text-text">Launch Seal at login</p>
+                  <p className="mt-1 text-xs text-text-muted">
+                    Starts automatically when you log into this device.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAutostart((v) => !v)}
+                  aria-pressed={autostart}
+                  className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                    autostart ? "bg-verdigris-wash text-verdigris" : "bg-surface-raised text-text-muted"
+                  }`}
+                >
+                  {autostart ? "On" : "Off"}
+                </button>
+              </div>
+            )}
+
             {error && <p className="mt-2 text-sm text-danger">{error}</p>}
             <button
               type="submit"

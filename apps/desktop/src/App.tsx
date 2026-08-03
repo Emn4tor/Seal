@@ -15,6 +15,7 @@ import { TutorialWizard } from "./components/TutorialWizard";
 import type { SealStatus } from "./components/CipherSeal";
 import { VoiceCallPanel } from "./components/VoiceCallPanel";
 import { applyPushToTalk, getPttEnabled, getPttShortcut } from "./lib/pushToTalk";
+import { getAutostartEnabled, syncAutostart } from "./lib/autostart";
 import type { AccountSummary, ChannelKind } from "./lib/types";
 
 type OpenModal = "add-contact" | "create-group" | "invite" | "create-channel" | null;
@@ -41,6 +42,7 @@ export default function App() {
   // whichever screen happens to be showing.
   useEffect(() => {
     applyPushToTalk(getPttEnabled(), getPttShortcut());
+    syncAutostart(getAutostartEnabled());
   }, []);
 
   const {

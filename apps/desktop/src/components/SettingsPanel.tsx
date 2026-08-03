@@ -15,6 +15,7 @@ import {
   getPttShortcut,
   savePttSettings,
 } from "../lib/pushToTalk";
+import { getAutostartEnabled, saveAutostartEnabled, syncAutostart } from "../lib/autostart";
 
 interface SettingsPanelProps {
   userId: string;
@@ -86,6 +87,7 @@ export function SettingsPanel({
   const [pttEnabled, setPttEnabled] = useState(getPttEnabled);
   const [pttShortcut, setPttShortcut] = useState(getPttShortcut);
   const [recordingShortcut, setRecordingShortcut] = useState(false);
+  const [autostartEnabled, setAutostartEnabled] = useState(getAutostartEnabled);
 
   useEffect(() => {
     if (!recordingShortcut) return;
@@ -113,6 +115,13 @@ export function SettingsPanel({
     setPttEnabled(next);
     savePttSettings(next, pttShortcut);
     applyPushToTalk(next, pttShortcut);
+  }
+
+  function handleToggleAutostart() {
+    const next = !autostartEnabled;
+    setAutostartEnabled(next);
+    saveAutostartEnabled(next);
+    syncAutostart(next);
   }
 
   useEffect(() => {
@@ -477,6 +486,29 @@ export function SettingsPanel({
             {pttEnabled && !pttShortcut && (
               <p className="mt-2 text-xs text-danger">Set a keybind above for push to talk to do anything.</p>
             )}
+          </div>
+        </section>
+
+        <section className="mt-6 rounded-xl border border-border bg-surface p-5">
+          <h2 className="font-display text-sm font-semibold uppercase tracking-wider text-text-muted">
+            Startup
+          </h2>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-text">Launch Seal at login</p>
+              <p className="mt-1 text-xs text-text-muted">
+                Starts automatically when you log into this device.
+              </p>
+            </div>
+            <button
+              onClick={handleToggleAutostart}
+              aria-pressed={autostartEnabled}
+              className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                autostartEnabled ? "bg-verdigris-wash text-verdigris" : "bg-surface-raised text-text-muted"
+              }`}
+            >
+              {autostartEnabled ? "On" : "Off"}
+            </button>
           </div>
         </section>
 

@@ -9,7 +9,9 @@ mod server_config;
 use std::path::PathBuf;
 
 use account_manager::AccountManager;
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Manager, WindowEvent};
 
 /// Filesystem locations resolved once at startup and needed before any
 /// backend is running. `shared_data_dir` is where `server.json` and
@@ -19,6 +21,16 @@ use tauri::Manager;
 /// is active isn't decided until after this is set up.
 pub struct AppPaths {
     pub shared_data_dir: PathBuf,
+}
+
+/// Shows and focuses the main window — used by the tray icon's "Open Seal"
+/// item, a left-click on the tray icon itself, and macOS's Dock-icon-click
+/// ("reopen") event, all of which need to undo the same hide-to-tray state.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -35,6 +47,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let shared_data_dir = app.path().app_data_dir()?;
             // `app_data_dir()` only resolves the conventional path — it
@@ -49,6 +62,47 @@ pub fn run() {
             // frontend calls `get_saved_server_url`/`get_official_server_url`
             // then `start_backend`, then `resolve_boot_account` to decide
             // which account (if any) to load automatically.
+
+            // Closing the main window hides it instead of quitting — Seal
+            // keeps running in the tray/menu bar so messages still arrive
+            // and notify. The app only actually exits via the tray menu's
+            // "Quit Seal" or the OS's own quit shortcut (Cmd+Q), neither of
+            // which goes through this window-level event.
+            if let Some(window) = app.get_webview_window("main") {
+                let window_to_hide = window.clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window_to_hide.hide();
+                    }
+                });
+            }
+
+            let show_item = MenuItem::with_id(app, "show", "Open Seal", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit Seal", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => show_main_window(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -84,6 +138,15 @@ pub fn run() {
             commands::get_image_exif,
             commands::save_attachment,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // macOS-specific: clicking the Dock icon while every window is
+            // hidden (closed to tray) doesn't automatically reopen one —
+            // this is the event that fires instead, so honor it the same
+            // way as the tray menu's "Open Seal".
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_main_window(app_handle);
+            }
+        });
 }

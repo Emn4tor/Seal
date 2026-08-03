@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use identity::Identity;
 use reqwest::{Client, StatusCode};
@@ -39,7 +39,16 @@ impl DirectoryClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: Client::new(),
+            // A bounded timeout matters more than it looks: without one, a
+            // connection left over from before the OS suspended the process
+            // (laptop sleep, app backgrounded a while) can sit there looking
+            // alive but never actually deliver a response, and this request
+            // would otherwise hang forever rather than fail and let a retry
+            // succeed on a fresh connection.
+            client: Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .expect("failed to build directory HTTP client"),
         }
     }
 

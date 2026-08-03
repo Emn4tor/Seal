@@ -9,6 +9,7 @@
     "dialog:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
-    "autostart:default"
+    "autostart:default",
+    "notification:default"
   ]
 }

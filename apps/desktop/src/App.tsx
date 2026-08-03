@@ -12,18 +12,36 @@ import { Modal } from "./components/Modal";
 import { CreateChannelModal } from "./components/CreateChannelModal";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TutorialWizard } from "./components/TutorialWizard";
-import type { SealStatus } from "./components/CipherSeal";
+import { CipherSeal, type SealStatus } from "./components/CipherSeal";
 import { VoiceCallPanel } from "./components/VoiceCallPanel";
 import { applyPushToTalk, getPttEnabled, getPttShortcut } from "./lib/pushToTalk";
 import { getAutostartEnabled, syncAutostart } from "./lib/autostart";
+import { ensureNotificationPermission, notifyNewMessage } from "./lib/notifications";
 import type { AccountSummary, ChannelKind } from "./lib/types";
 
 type OpenModal = "add-contact" | "create-group" | "invite" | "create-channel" | null;
-type Phase = "loading" | "choose-server" | "onboarding" | "picker" | "ready";
+type Phase = "loading" | "boot-error" | "choose-server" | "onboarding" | "picker" | "ready";
 const TUTORIAL_SEEN_KEY = "seal-tutorial-seen";
+
+/** Whether `conversationId` is the one currently open on screen — the same
+ * rule `useChatStore`'s own `appendMessage` uses to decide whether to bump
+ * the unread count, reused here to decide whether an incoming message is
+ * worth a desktop notification (no point notifying about the conversation
+ * you're already looking at). */
+function isConversationOpen(conversationId: string): boolean {
+  const selected = useChatStore.getState().selected;
+  const selectedId =
+    selected?.kind === "dm"
+      ? selected.userId
+      : selected?.kind === "group"
+        ? `${selected.groupId}:${selected.channelId}`
+        : null;
+  return selectedId === conversationId;
+}
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("loading");
+  const [bootError, setBootError] = useState<string | null>(null);
   const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
@@ -43,6 +61,7 @@ export default function App() {
   useEffect(() => {
     applyPushToTalk(getPttEnabled(), getPttShortcut());
     syncAutostart(getAutostartEnabled());
+    ensureNotificationPermission();
   }, []);
 
   const {
@@ -120,34 +139,56 @@ export default function App() {
   // available essentially immediately after startup, but not provably
   // before this effect's first tick — rather than assume the exact
   // ordering, poll briefly the same way the rest of this bootstrap does.
+  //
+  // Everything past that retry loop is wrapped in a try/catch: this used to
+  // let any failure here (a stale connection after the window was
+  // backgrounded/asleep a while, a directory server that's briefly
+  // unreachable, etc.) leave `phase` stuck at "loading" forever with no
+  // error and no way to recover short of force-quitting. Now a failure
+  // lands on a real screen with a retry button instead.
+  async function bootFromSavedServer(isCancelled: () => boolean) {
+    let saved: string | null = null;
+    for (let attempt = 0; attempt < 200 && !isCancelled(); attempt++) {
+      try {
+        saved = await api.getSavedServerUrl();
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    if (isCancelled()) return;
+
+    if (!saved) {
+      setPhase("choose-server");
+      return;
+    }
+
+    try {
+      const resolved = await api.startBackend(saved);
+      if (isCancelled()) return;
+      setServerUrl(resolved);
+      await bootAccounts(resolved);
+    } catch (err) {
+      if (isCancelled()) return;
+      setBootError(String(err));
+      setPhase("boot-error");
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      let saved: string | null = null;
-      for (let attempt = 0; attempt < 200 && !cancelled; attempt++) {
-        try {
-          saved = await api.getSavedServerUrl();
-          break;
-        } catch {
-          await new Promise((r) => setTimeout(r, 100));
-        }
-      }
-      if (cancelled) return;
-
-      if (saved) {
-        const resolved = await api.startBackend(saved);
-        if (cancelled) return;
-        setServerUrl(resolved);
-        await bootAccounts(resolved);
-      } else {
-        setPhase("choose-server");
-      }
-    })();
+    bootFromSavedServer(() => cancelled);
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function handleRetryBoot() {
+    setBootError(null);
+    setPhase("loading");
+    bootFromSavedServer(() => false);
+  }
 
   async function handleCreateAccount(name: string) {
     if (!serverUrl) return;
@@ -209,19 +250,41 @@ export default function App() {
     const unlistenPromises = [
       onChatEvent((event) => {
         if (event.type === "direct_message") {
+          const wasOpen = isConversationOpen(event.from);
           appendMessage(event.from, {
             sender_user_id: event.from,
             body: event.body,
             attachment: event.attachment,
             sent_at: Date.now() / 1000,
           });
+          if (!wasOpen) {
+            const sender = useChatStore.getState().contacts.find((c) => c.user_id === event.from);
+            notifyNewMessage(
+              sender?.display_name ?? event.from.slice(0, 12),
+              event.body || (event.attachment ? "Sent an attachment" : ""),
+            );
+          }
         } else if (event.type === "group_message") {
-          appendMessage(`${event.group_id}:${event.channel_id}`, {
+          const conversationId = `${event.group_id}:${event.channel_id}`;
+          const wasOpen = isConversationOpen(conversationId);
+          appendMessage(conversationId, {
             sender_user_id: event.from,
             body: event.body,
             attachment: event.attachment,
             sent_at: Date.now() / 1000,
           });
+          if (!wasOpen) {
+            const state = useChatStore.getState();
+            const group = state.groups.find((g) => g.group_id === event.group_id);
+            const channel = group?.channels.find((c) => c.channel_id === event.channel_id);
+            const sender = state.contacts.find((c) => c.user_id === event.from);
+            const senderName = sender?.display_name ?? event.from.slice(0, 12);
+            const bodyText = event.body || (event.attachment ? "Sent an attachment" : "");
+            notifyNewMessage(
+              group ? (channel ? `${group.name} · #${channel.name}` : group.name) : "Group message",
+              `${senderName}: ${bodyText}`,
+            );
+          }
         } else if (event.type === "network_status") {
           setNetworkStatus(event.status);
         }
@@ -284,6 +347,21 @@ export default function App() {
     return (
       <div className="flex h-screen items-center justify-center bg-ink">
         <p className="text-sm text-text-faint">Waking up…</p>
+      </div>
+    );
+  }
+
+  if (phase === "boot-error") {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-ink px-6 text-center">
+        <CipherSeal status="idle" size={32} />
+        <p className="max-w-sm text-sm text-text-muted">Couldn't reconnect: {bootError}</p>
+        <button
+          onClick={handleRetryBoot}
+          className="rounded-md bg-brass px-4 py-2 text-sm font-medium text-ink transition hover:brightness-110"
+        >
+          Try again
+        </button>
       </div>
     );
   }

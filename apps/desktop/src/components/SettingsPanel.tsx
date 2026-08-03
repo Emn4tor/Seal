@@ -16,6 +16,11 @@ import {
   savePttSettings,
 } from "../lib/pushToTalk";
 import { getAutostartEnabled, saveAutostartEnabled, syncAutostart } from "../lib/autostart";
+import {
+  ensureNotificationPermission,
+  getNotificationsEnabled,
+  saveNotificationsEnabled,
+} from "../lib/notifications";
 
 interface SettingsPanelProps {
   userId: string;
@@ -88,6 +93,7 @@ export function SettingsPanel({
   const [pttShortcut, setPttShortcut] = useState(getPttShortcut);
   const [recordingShortcut, setRecordingShortcut] = useState(false);
   const [autostartEnabled, setAutostartEnabled] = useState(getAutostartEnabled);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(getNotificationsEnabled);
 
   useEffect(() => {
     if (!recordingShortcut) return;
@@ -122,6 +128,13 @@ export function SettingsPanel({
     setAutostartEnabled(next);
     saveAutostartEnabled(next);
     syncAutostart(next);
+  }
+
+  function handleToggleNotifications() {
+    const next = !notificationsEnabled;
+    setNotificationsEnabled(next);
+    saveNotificationsEnabled(next);
+    if (next) ensureNotificationPermission();
   }
 
   useEffect(() => {
@@ -508,6 +521,30 @@ export function SettingsPanel({
               }`}
             >
               {autostartEnabled ? "On" : "Off"}
+            </button>
+          </div>
+        </section>
+
+        <section className="mt-6 rounded-xl border border-border bg-surface p-5">
+          <h2 className="font-display text-sm font-semibold uppercase tracking-wider text-text-muted">
+            Notifications
+          </h2>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-text">Message notifications</p>
+              <p className="mt-1 text-xs text-text-muted">
+                A native notification and a chime for new messages while Seal is open —
+                including while it's minimized to the tray.
+              </p>
+            </div>
+            <button
+              onClick={handleToggleNotifications}
+              aria-pressed={notificationsEnabled}
+              className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                notificationsEnabled ? "bg-verdigris-wash text-verdigris" : "bg-surface-raised text-text-muted"
+              }`}
+            >
+              {notificationsEnabled ? "On" : "Off"}
             </button>
           </div>
         </section>

@@ -30,8 +30,8 @@ PROFILE_B="${2:-bob}"
 # copy in /Applications.
 find_app_binary() {
   local candidates=(
-    "$REPO_ROOT/target/release/bundle/macos/desktop.app/Contents/MacOS/desktop"
-    "/Applications/desktop.app/Contents/MacOS/desktop"
+    "$REPO_ROOT/target/release/bundle/macos/Seal.app/Contents/MacOS/Seal"
+    "/Applications/Seal.app/Contents/MacOS/Seal"
   )
   for c in "${candidates[@]}"; do
     if [[ -x "$c" ]]; then

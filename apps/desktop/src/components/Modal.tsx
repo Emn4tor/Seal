@@ -57,7 +57,7 @@ export function Modal({
             value={value}
             onChange={(e) => setValue(e.target.value)}
             placeholder={placeholder}
-            className={`w-full rounded-md border border-border bg-ink px-3 py-2 text-sm text-text placeholder:text-text-faint focus:border-brass focus:outline-none ${
+            className={`w-full rounded-md border border-border bg-ink px-3 py-2 text-sm text-text transition-colors placeholder:text-text-faint focus:border-brass focus:outline-none ${
               monospaceInput ? "font-mono" : ""
             }`}
           />
@@ -73,7 +73,7 @@ export function Modal({
             <button
               type="submit"
               disabled={!value.trim() || busy}
-              className="rounded-md bg-brass px-3.5 py-1.5 text-sm font-medium text-ink disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-md bg-brass px-3.5 py-1.5 text-sm font-medium text-ink transition enabled:hover:scale-105 enabled:hover:brightness-110 enabled:active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {busy ? "Working…" : submitLabel}
             </button>

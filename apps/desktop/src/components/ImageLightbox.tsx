@@ -46,7 +46,7 @@ export function ImageLightbox({ attachment, onClose }: ImageLightboxProps) {
           <button
             onClick={onClose}
             aria-label="Close"
-            className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted hover:bg-surface hover:text-text"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition hover:scale-110 hover:bg-surface hover:text-text active:scale-90"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
               <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />

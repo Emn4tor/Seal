@@ -217,7 +217,7 @@ export function SettingsPanel({
           <button
             onClick={onClose}
             aria-label="Close settings"
-            className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted hover:bg-surface hover:text-text"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted hover:scale-110 hover:bg-surface hover:text-text active:scale-90"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
               <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -240,7 +240,7 @@ export function SettingsPanel({
                   autoFocus
                   value={nameInput}
                   onChange={(e) => setNameInput(e.target.value)}
-                  className="w-full rounded-md border border-border bg-ink px-3 py-2 text-[15px] text-text focus:border-brass focus:outline-none"
+                  className="w-full rounded-md border border-border bg-ink px-3 py-2 text-[15px] text-text transition-colors focus:border-brass focus:outline-none"
                 />
                 <div className="mt-2 flex gap-2">
                   <button
@@ -351,7 +351,7 @@ export function SettingsPanel({
 
           <button
             onClick={onAddAnotherAccount}
-            className="mt-4 rounded-md border border-border px-3.5 py-2 text-sm font-medium text-brass transition hover:border-brass-dim hover:bg-brass-wash"
+            className="mt-4 rounded-md border border-border px-3.5 py-2 text-sm font-medium text-brass transition hover:-translate-y-px hover:border-brass-dim hover:bg-brass-wash active:translate-y-0"
           >
             Add another account
           </button>
@@ -392,7 +392,7 @@ export function SettingsPanel({
                 value={serverInput}
                 onChange={(e) => setServerInput(e.target.value)}
                 placeholder="https://directory.example.com"
-                className="w-full rounded-md border border-border bg-ink px-3 py-2 font-mono text-[13px] text-text placeholder:text-text-faint focus:border-brass focus:outline-none"
+                className="w-full rounded-md border border-border bg-ink px-3 py-2 font-mono text-[13px] text-text transition-colors placeholder:text-text-faint focus:border-brass focus:outline-none"
               />
               <div className="mt-2 flex gap-2">
                 <button
@@ -426,7 +426,7 @@ export function SettingsPanel({
           </p>
           <button
             onClick={onOpenTutorial}
-            className="mt-4 rounded-md border border-border px-3.5 py-2 text-sm font-medium text-brass transition hover:border-brass-dim hover:bg-brass-wash"
+            className="mt-4 rounded-md border border-border px-3.5 py-2 text-sm font-medium text-brass transition hover:-translate-y-px hover:border-brass-dim hover:bg-brass-wash active:translate-y-0"
           >
             Replay the walkthrough
           </button>
@@ -469,7 +469,7 @@ export function SettingsPanel({
               <button
                 onClick={handleTogglePtt}
                 aria-pressed={pttEnabled}
-                className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-90 ${
                   pttEnabled ? "bg-verdigris-wash text-verdigris" : "bg-surface-raised text-text-muted"
                 }`}
               >
@@ -516,7 +516,7 @@ export function SettingsPanel({
             <button
               onClick={handleToggleAutostart}
               aria-pressed={autostartEnabled}
-              className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition ${
+              className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-90 ${
                 autostartEnabled ? "bg-verdigris-wash text-verdigris" : "bg-surface-raised text-text-muted"
               }`}
             >
@@ -540,7 +540,7 @@ export function SettingsPanel({
             <button
               onClick={handleToggleNotifications}
               aria-pressed={notificationsEnabled}
-              className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition ${
+              className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-90 ${
                 notificationsEnabled ? "bg-verdigris-wash text-verdigris" : "bg-surface-raised text-text-muted"
               }`}
             >
@@ -620,13 +620,13 @@ export function SettingsPanel({
           <input
             value={confirmText}
             onChange={(e) => setConfirmText(e.target.value)}
-            className="mt-1.5 w-full rounded-md border border-border bg-ink px-3 py-2 font-mono text-sm text-text focus:border-danger focus:outline-none"
+            className="mt-1.5 w-full rounded-md border border-border bg-ink px-3 py-2 font-mono text-sm text-text transition-colors focus:border-danger focus:outline-none"
             placeholder={CONFIRM_PHRASE}
           />
           <button
             onClick={handlePurge}
             disabled={confirmText !== CONFIRM_PHRASE || purging}
-            className="mt-4 w-full rounded-md bg-danger py-2.5 text-sm font-medium text-text transition disabled:cursor-not-allowed disabled:opacity-30"
+            className="mt-4 w-full rounded-md bg-danger py-2.5 text-sm font-medium text-text transition enabled:hover:brightness-110 enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-30"
           >
             {purging ? "Deleting…" : "Delete everything on this device"}
           </button>

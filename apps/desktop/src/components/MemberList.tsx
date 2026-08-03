@@ -10,7 +10,7 @@ export function MemberList({ group, currentUserId }: MemberListProps) {
   const members = group.members.filter((m) => m.role !== "owner");
 
   const Row = ({ userId, role }: { userId: string; role: string }) => (
-    <div className="flex items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-raised/60">
+    <div className="flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-raised/60">
       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-raised font-display text-[11px] font-medium text-text-muted">
         {userId.slice(0, 1).toUpperCase()}
       </div>

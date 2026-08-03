@@ -29,7 +29,7 @@ function RailButton({
       onClick={onClick}
       aria-label={label}
       aria-current={active}
-      className={`group relative flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-medium transition-all hover:rounded-xl ${
+      className={`group relative flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-medium transition-all hover:scale-105 hover:rounded-xl active:scale-95 ${
         active
           ? "rounded-xl bg-brass-wash text-brass ring-1 ring-brass/40"
           : "bg-surface text-text-muted hover:bg-surface-raised hover:text-text"
@@ -88,7 +88,7 @@ export function Sidebar({ groups, selected, unread, onSelectDms, onSelectGroup, 
         <button
           onClick={onCreateGroup}
           aria-label="Create a group"
-          className="flex h-11 w-11 items-center justify-center rounded-2xl bg-surface text-verdigris transition-all hover:rounded-xl hover:bg-verdigris-wash"
+          className="flex h-11 w-11 items-center justify-center rounded-2xl bg-surface text-verdigris transition-all hover:scale-105 hover:rounded-xl hover:bg-verdigris-wash active:scale-95"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -99,7 +99,7 @@ export function Sidebar({ groups, selected, unread, onSelectDms, onSelectGroup, 
       <button
         onClick={onOpenSettings}
         aria-label="Settings"
-        className="flex h-11 w-11 items-center justify-center rounded-2xl bg-surface text-text-muted transition-all hover:rounded-xl hover:bg-surface-raised hover:text-text"
+        className="flex h-11 w-11 items-center justify-center rounded-2xl bg-surface text-text-muted transition-all hover:scale-105 hover:rounded-xl hover:bg-surface-raised hover:text-text active:scale-95"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
           <path

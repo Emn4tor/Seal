@@ -115,7 +115,7 @@ export function TutorialWizard({ userId, onClose }: TutorialWizardProps) {
           <button
             onClick={onClose}
             aria-label="Close tutorial"
-            className="flex h-7 w-7 items-center justify-center rounded-md text-text-faint hover:bg-surface-raised hover:text-text"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-text-faint transition hover:scale-110 hover:bg-surface-raised hover:text-text active:scale-90"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
               <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -149,7 +149,7 @@ export function TutorialWizard({ userId, onClose }: TutorialWizardProps) {
             )}
             <button
               onClick={() => (isLast ? onClose() : setIndex((i) => i + 1))}
-              className="rounded-md bg-brass px-4 py-2 text-sm font-medium text-ink hover:brightness-110"
+              className="rounded-md bg-brass px-4 py-2 text-sm font-medium text-ink transition hover:scale-105 hover:brightness-110 active:scale-95"
             >
               {isLast ? "Got it" : "Next"}
             </button>

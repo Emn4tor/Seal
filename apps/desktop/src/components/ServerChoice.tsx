@@ -60,7 +60,9 @@ export function ServerChoice({ onChosen }: ServerChoiceProps) {
             onClick={() => sealConfigured && setMode("seal")}
             disabled={!sealConfigured}
             className={`rounded-lg border px-4 py-3 text-left transition ${
-              mode === "seal" ? "border-brass bg-brass-wash" : "border-border bg-surface hover:border-brass-dim"
+              mode === "seal"
+                ? "border-brass bg-brass-wash"
+                : "border-border bg-surface enabled:hover:-translate-y-px enabled:hover:border-brass-dim"
             } ${!sealConfigured ? "cursor-not-allowed opacity-40" : ""}`}
           >
             <p className="text-sm font-medium text-text">Seal</p>
@@ -76,7 +78,9 @@ export function ServerChoice({ onChosen }: ServerChoiceProps) {
           <button
             onClick={() => setMode("custom")}
             className={`rounded-lg border px-4 py-3 text-left transition ${
-              mode === "custom" ? "border-brass bg-brass-wash" : "border-border bg-surface hover:border-brass-dim"
+              mode === "custom"
+                ? "border-brass bg-brass-wash"
+                : "border-border bg-surface hover:-translate-y-px hover:border-brass-dim"
             }`}
           >
             <p className="text-sm font-medium text-text">Custom server</p>
@@ -88,7 +92,7 @@ export function ServerChoice({ onChosen }: ServerChoiceProps) {
                 onChange={(e) => setCustomUrl(e.target.value)}
                 onClick={(e) => e.stopPropagation()}
                 placeholder="https://directory.example.com"
-                className="mt-2.5 w-full rounded-md border border-border bg-ink px-3 py-2 font-mono text-[13px] text-text placeholder:text-text-faint focus:border-brass focus:outline-none"
+                className="mt-2.5 w-full rounded-md border border-border bg-ink px-3 py-2 font-mono text-[13px] text-text transition-colors placeholder:text-text-faint focus:border-brass focus:outline-none"
               />
             )}
           </button>
@@ -110,7 +114,7 @@ export function ServerChoice({ onChosen }: ServerChoiceProps) {
         <button
           onClick={handleContinue}
           disabled={busy || (mode === "custom" && !customUrl.trim()) || (mode === "seal" && !officialUrl)}
-          className="mt-6 w-full rounded-md bg-brass py-2.5 text-[15px] font-medium text-ink transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+          className="mt-6 w-full rounded-md bg-brass py-2.5 text-[15px] font-medium text-ink transition enabled:hover:scale-[1.02] enabled:hover:brightness-110 enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? "Connecting…" : "Continue"}
         </button>

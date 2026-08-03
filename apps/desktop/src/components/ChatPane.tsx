@@ -62,9 +62,13 @@ function AttachmentBubble({ attachment }: { attachment: Attachment }) {
       <>
         <button
           onClick={() => setLightboxOpen(true)}
-          className="block max-w-[240px] overflow-hidden rounded-lg border border-border transition hover:border-brass-dim"
+          className="group block max-w-[240px] overflow-hidden rounded-lg border border-border transition hover:border-brass-dim"
         >
-          <img src={dataUrl(attachment)} alt={attachment.filename} className="block max-h-[240px] w-full object-cover" />
+          <img
+            src={dataUrl(attachment)}
+            alt={attachment.filename}
+            className="block max-h-[240px] w-full object-cover transition-transform duration-300 group-hover:scale-105"
+          />
         </button>
         {lightboxOpen && <ImageLightbox attachment={attachment} onClose={() => setLightboxOpen(false)} />}
       </>
@@ -81,7 +85,7 @@ function AttachmentBubble({ attachment }: { attachment: Attachment }) {
       </div>
       <button
         onClick={handleDownload}
-        className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-brass hover:bg-brass-wash"
+        className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-brass hover:bg-brass-wash active:scale-95"
       >
         Save
       </button>
@@ -191,13 +195,13 @@ export function ChatPane({ title, subtitle, sealStatus, messages, currentUserId,
           </div>
         )}
         {attachError && <p className="mb-2 text-xs text-danger">{attachError}</p>}
-        <div className="flex items-center gap-2 rounded-xl border border-border bg-surface px-3.5 py-2 focus-within:border-brass-dim">
+        <div className="flex items-center gap-2 rounded-xl border border-border bg-surface px-3.5 py-2 transition-colors focus-within:border-brass-dim">
           <button
             type="button"
             onClick={handleAttach}
             aria-label="Attach a file"
             title="Attach a file"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-muted transition hover:bg-surface-raised hover:text-text"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-muted transition hover:scale-110 hover:bg-surface-raised hover:text-text active:scale-90"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
               <path
@@ -219,7 +223,7 @@ export function ChatPane({ title, subtitle, sealStatus, messages, currentUserId,
             type="submit"
             disabled={(!draft.trim() && !pendingAttachment) || sending}
             aria-label="Send"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brass text-ink transition disabled:cursor-not-allowed disabled:opacity-30"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brass text-ink transition enabled:hover:scale-110 enabled:active:scale-90 disabled:cursor-not-allowed disabled:opacity-30"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
               <path d="M4 12h16M13 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />

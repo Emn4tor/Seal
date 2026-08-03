@@ -88,7 +88,7 @@ export function Onboarding({ mode = "first", onSubmit, onCancel }: OnboardingPro
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="What should people call you?"
-              className="w-full rounded-md border border-border bg-surface px-3.5 py-2.5 text-[15px] text-text placeholder:text-text-faint focus:border-brass focus:outline-none"
+              className="w-full rounded-md border border-border bg-surface px-3.5 py-2.5 text-[15px] text-text transition-colors placeholder:text-text-faint focus:border-brass focus:outline-none"
             />
 
             {!isAdd && (
@@ -103,7 +103,7 @@ export function Onboarding({ mode = "first", onSubmit, onCancel }: OnboardingPro
                   type="button"
                   onClick={() => setAutostart((v) => !v)}
                   aria-pressed={autostart}
-                  className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                  className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-90 ${
                     autostart ? "bg-verdigris-wash text-verdigris" : "bg-surface-raised text-text-muted"
                   }`}
                 >
@@ -116,7 +116,7 @@ export function Onboarding({ mode = "first", onSubmit, onCancel }: OnboardingPro
             <button
               type="submit"
               disabled={!name.trim() || busy}
-              className="mt-4 w-full rounded-md bg-brass py-2.5 text-[15px] font-medium text-ink transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+              className="mt-4 w-full rounded-md bg-brass py-2.5 text-[15px] font-medium text-ink transition enabled:hover:scale-[1.02] enabled:hover:brightness-110 enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
             >
               {busy ? "Generating your keys…" : isAdd ? "Add account" : "Get started"}
             </button>

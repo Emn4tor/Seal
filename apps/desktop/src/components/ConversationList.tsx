@@ -60,7 +60,7 @@ function ChannelSection({
           <button
             onClick={onCreate}
             aria-label={`Add a ${title.toLowerCase()} channel`}
-            className="flex h-4 w-4 items-center justify-center rounded text-text-faint hover:bg-surface-raised hover:text-brass"
+            className="flex h-4 w-4 items-center justify-center rounded text-text-faint hover:scale-110 hover:bg-surface-raised hover:text-brass active:scale-90"
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
               <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
@@ -74,7 +74,7 @@ function ChannelSection({
           <button
             key={channel.channel_id}
             onClick={() => onSelect(channel.channel_id)}
-            className={`mb-0.5 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition ${
+            className={`mb-0.5 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition active:scale-[0.99] ${
               active ? "bg-surface-raised text-text" : "text-text-muted hover:bg-surface-raised/60 hover:text-text"
             }`}
           >
@@ -132,7 +132,7 @@ export function ConversationList({
         <div className="border-t border-border p-3">
           <button
             onClick={onInvite}
-            className="w-full rounded-md border border-border py-2 text-xs font-medium text-text-muted transition hover:border-brass-dim hover:text-brass"
+            className="w-full rounded-md border border-border py-2 text-xs font-medium text-text-muted transition hover:-translate-y-px hover:border-brass-dim hover:text-brass active:translate-y-0"
           >
             Invite people
           </button>
@@ -148,7 +148,7 @@ export function ConversationList({
         <button
           onClick={onAddContact}
           aria-label="Add a contact"
-          className="flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-raised hover:text-brass"
+          className="flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:scale-110 hover:bg-surface-raised hover:text-brass active:scale-90"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -172,7 +172,7 @@ export function ConversationList({
             <button
               key={c.user_id}
               onClick={() => onSelectContact(c.user_id)}
-              className={`mb-0.5 flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition ${
+              className={`mb-0.5 flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition active:scale-[0.99] ${
                 active ? "bg-surface-raised" : "hover:bg-surface-raised/60"
               }`}
             >

@@ -223,7 +223,7 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
             <button
               onClick={handleJoin}
               disabled={busy}
-              className="flex items-center gap-2 rounded-xl bg-verdigris px-6 py-3 font-display text-sm font-semibold text-ink transition hover:bg-verdigris-dim disabled:opacity-60"
+              className="flex items-center gap-2 rounded-xl bg-verdigris px-6 py-3 font-display text-sm font-semibold text-ink transition enabled:hover:scale-105 enabled:hover:bg-verdigris-dim enabled:active:scale-95 disabled:opacity-60"
             >
               <MicIcon muted={false} />
               {busy ? "Joining…" : "Join Voice"}
@@ -251,7 +251,7 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
               onClick={toggleMuted}
               aria-pressed={muted}
               title={muted ? "Unmute" : "Mute"}
-              className={`flex h-11 w-11 items-center justify-center rounded-full transition ${
+              className={`flex h-11 w-11 items-center justify-center rounded-full transition hover:scale-105 active:scale-95 ${
                 muted ? "bg-danger-wash text-danger" : "bg-surface-raised text-text hover:bg-surface"
               }`}
             >
@@ -262,7 +262,7 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
             onClick={toggleChanger}
             aria-pressed={changerEnabled}
             title="Voice changer: a best-effort pitch-shift disguise, not a rigorous anonymity guarantee"
-            className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm transition ${
+            className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm transition hover:scale-105 active:scale-95 ${
               changerEnabled ? "bg-brass-wash text-brass" : "bg-surface-raised text-text hover:bg-surface"
             }`}
           >
@@ -273,7 +273,7 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
             onClick={toggleHearSelf}
             aria-pressed={hearSelf}
             title="Hear yourself: loop your own mic back to your speakers"
-            className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm transition ${
+            className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm transition hover:scale-105 active:scale-95 ${
               hearSelf ? "bg-brass-wash text-brass" : "bg-surface-raised text-text hover:bg-surface"
             }`}
           >
@@ -284,7 +284,7 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
             onClick={handleLeave}
             disabled={busy}
             title="Leave voice channel"
-            className="flex h-11 w-11 items-center justify-center rounded-full bg-danger-wash text-danger transition hover:bg-danger-dim hover:text-ink disabled:opacity-60"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-danger-wash text-danger transition enabled:hover:scale-105 enabled:hover:bg-danger-dim enabled:hover:text-ink enabled:active:scale-95 disabled:opacity-60"
           >
             <LeaveIcon />
           </button>

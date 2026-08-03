@@ -81,6 +81,22 @@ body {
 :focus-visible {
   outline: 2px solid var(--color-brass);
   outline-offset: 2px;
+  transition: outline-offset 0.15s ease-out;
+}
+
+/* Baseline smoothness for every interactive element — most of this app's
+   buttons only specify a `hover:` color/border, which without this snaps
+   instantly instead of easing. One rule here beats repeating
+   `transition-colors` on every button in every component. Transform is
+   included so the handful of places that add a hover scale/lift don't need
+   their own transition declaration either. */
+button,
+a,
+[role="button"],
+input[type="range"] {
+  transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {

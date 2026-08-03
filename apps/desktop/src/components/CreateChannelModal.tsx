@@ -46,7 +46,7 @@ export function CreateChannelModal({ initialKind, onSubmit, onClose }: CreateCha
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. announcements"
-            className="w-full rounded-md border border-border bg-ink px-3 py-2 text-sm text-text placeholder:text-text-faint focus:border-brass focus:outline-none"
+            className="w-full rounded-md border border-border bg-ink px-3 py-2 text-sm text-text transition-colors placeholder:text-text-faint focus:border-brass focus:outline-none"
           />
 
           <label className="mb-1.5 mt-4 block text-xs font-medium uppercase tracking-wider text-text-faint">
@@ -56,7 +56,7 @@ export function CreateChannelModal({ initialKind, onSubmit, onClose }: CreateCha
             <button
               type="button"
               onClick={() => setKind("text")}
-              className={`flex-1 rounded-md border px-3 py-2 text-left text-sm transition ${
+              className={`flex-1 rounded-md border px-3 py-2 text-left text-sm transition hover:-translate-y-px active:translate-y-0 ${
                 kind === "text" ? "border-brass bg-brass-wash text-text" : "border-border text-text-muted hover:border-brass-dim"
               }`}
             >
@@ -65,7 +65,7 @@ export function CreateChannelModal({ initialKind, onSubmit, onClose }: CreateCha
             <button
               type="button"
               onClick={() => setKind("voice")}
-              className={`flex-1 rounded-md border px-3 py-2 text-left text-sm transition ${
+              className={`flex-1 rounded-md border px-3 py-2 text-left text-sm transition hover:-translate-y-px active:translate-y-0 ${
                 kind === "voice" ? "border-brass bg-brass-wash text-text" : "border-border text-text-muted hover:border-brass-dim"
               }`}
             >
@@ -91,7 +91,7 @@ export function CreateChannelModal({ initialKind, onSubmit, onClose }: CreateCha
             <button
               type="submit"
               disabled={!name.trim() || busy}
-              className="rounded-md bg-brass px-3.5 py-1.5 text-sm font-medium text-ink disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-md bg-brass px-3.5 py-1.5 text-sm font-medium text-ink transition enabled:hover:scale-105 enabled:hover:brightness-110 enabled:active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {busy ? "Creating…" : "Create channel"}
             </button>

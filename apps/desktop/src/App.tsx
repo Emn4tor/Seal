@@ -364,7 +364,7 @@ export default function App() {
         <p className="max-w-sm text-sm text-text-muted">Couldn't reconnect: {bootError}</p>
         <button
           onClick={handleRetryBoot}
-          className="rounded-md bg-brass px-4 py-2 text-sm font-medium text-ink transition hover:brightness-110"
+          className="rounded-md bg-brass px-4 py-2 text-sm font-medium text-ink transition hover:scale-105 hover:brightness-110 active:scale-95"
         >
           Try again
         </button>

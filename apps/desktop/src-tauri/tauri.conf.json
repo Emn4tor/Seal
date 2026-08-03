@@ -3,7 +3,7 @@
   "productName": "Seal",
   "mainBinaryName": "Seal",
   "version": "0.1.0",
-  "identifier": "com.emil.desktop",
+  "identifier": "de.emn4tor.seal",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

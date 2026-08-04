@@ -679,7 +679,16 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now seal-directory
+systemctl enable seal-directory
+# Not `enable --now`: `--now` is just `start`, and `start` on an already-
+# active unit is a silent no-op — a re-run would rebuild the binary and
+# rewrite this unit file (relay port, external multiaddr, whatever else
+# changed) but never actually swap the running process for it, since
+# systemd doesn't re-exec a live service just because its unit file or the
+# binary on disk changed underneath it. `restart` is unconditional either
+# way: starts it fresh on a first run, actually restarts it on every
+# later one.
+systemctl restart seal-directory
 echo
 
 # ---------------------------------------------------------------------------

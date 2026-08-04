@@ -1,24 +1,27 @@
 import { useEffect, useRef } from "react";
 import splashSrc from "../assets/splash.mp4";
+import { playBootTone } from "../lib/bootSound";
 
 interface SplashProps {
   onFinished: () => void;
 }
 
 /** The boot splash: an externally-rendered clip (not a CSS animation) of
- * the CipherSeal mark spinning up and locking into its "secure" state, with
- * a synthesized whoosh + chime. Shown once per launch for a fixed ~1.8s
- * regardless of how long the real boot sequence takes underneath it — see
- * `App.tsx`'s `splashDone` gate.
+ * the CipherSeal mark spinning up and locking into its "secure" state.
+ * Shown once per launch for a fixed ~3.0s regardless of how long the real
+ * boot sequence takes underneath it — see `App.tsx`'s `splashDone` gate.
  *
- * Falls back hard on anything going wrong: most webviews block autoplay
- * with sound before any user gesture has happened, so it starts muted and
- * only tries to unmute once actual playback has begun (never both
- * autoplaying *and* manually calling `play()` at once — racing the two is
- * what caused this to hang the whole page during development); a load
- * error finishes immediately; and a backstop timer covers the rare case
- * where `ended` never fires. After last session's "stuck on Waking up"
- * bug, nothing here is allowed to be able to hang the boot screen. */
+ * The clip's own embedded audio (a whoosh) stays muted for its whole
+ * runtime — two separate synthesized tones (`lib/bootSound.ts`) play
+ * instead, timed to the clip's own visual beats rather than to the end:
+ * the mark fully forming (~0.55s in) and the center's brief light flash
+ * just before it locks in (~1.85s in). Both land well before the clip
+ * actually ends at 3.0s.
+ *
+ * Falls back hard on anything going wrong: a load error finishes
+ * immediately, and a backstop timer covers the rare case where `ended`
+ * never fires. After last session's "stuck on Waking up" bug, nothing
+ * here is allowed to be able to hang the boot screen. */
 export function Splash({ onFinished }: SplashProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const onFinishedRef = useRef(onFinished);
@@ -35,26 +38,29 @@ export function Splash({ onFinished }: SplashProps) {
       onFinishedRef.current();
     }
 
-    const timeoutId = setTimeout(finish, 2600);
+    const timeoutId = setTimeout(finish, 3800);
+    let toneOneId: ReturnType<typeof setTimeout> | undefined;
+    let toneTwoId: ReturnType<typeof setTimeout> | undefined;
 
-    function tryUnmute() {
-      if (video && video.muted && !video.paused) {
-        video.muted = false;
-      }
+    // Anchored to when playback actually starts, not to mount — scheduling
+    // off the "playing" event keeps the tones in sync with the clip's own
+    // beats regardless of how long it took to become playable.
+    function scheduleTones() {
+      toneOneId = setTimeout(() => playBootTone("form"), 550);
+      toneTwoId = setTimeout(() => playBootTone("lock"), 1850);
     }
 
     video.addEventListener("ended", finish);
     video.addEventListener("error", finish);
-    // Only unmute after real playback has actually started — attempting a
-    // second, competing `play()` call to "upgrade" to sound is what caused
-    // the hang this replaced.
-    video.addEventListener("playing", tryUnmute, { once: true });
+    video.addEventListener("playing", scheduleTones, { once: true });
 
     return () => {
       clearTimeout(timeoutId);
+      clearTimeout(toneOneId);
+      clearTimeout(toneTwoId);
       video.removeEventListener("ended", finish);
       video.removeEventListener("error", finish);
-      video.removeEventListener("playing", tryUnmute);
+      video.removeEventListener("playing", scheduleTones);
     };
   }, []);
 

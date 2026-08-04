@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { api, onChatEvent } from "../lib/tauri";
+import { api, onChatEvent, onMicMutedChanged } from "../lib/tauri";
 import { getMicThresholdDb } from "../lib/voiceSettings";
 import { getPttEnabled, getPttShortcut } from "../lib/pushToTalk";
-import { playVoiceJoinSound, playVoiceLeaveSound } from "../lib/voiceSounds";
+import {
+  playMicMutedSound,
+  playMicUnmutedSound,
+  playVoiceJoinSound,
+  playVoiceLeaveSound,
+} from "../lib/voiceSounds";
 
 interface VoiceCallPanelProps {
   groupId: string;
@@ -133,6 +138,21 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
     return () => clearInterval(interval);
   }, [joined]);
 
+  // Only the tray menu's mic-mute item needs this — see `onMicMutedChanged`
+  // — since it's the one way mute state can change with this panel's own
+  // `muted` state having no idea it happened.
+  useEffect(() => {
+    if (!joined) return;
+    const unlisten = onMicMutedChanged((newMuted) => {
+      setMuted(newMuted);
+      if (newMuted) playMicMutedSound();
+      else playMicUnmutedSound();
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, [joined]);
+
   async function handleJoin() {
     setError(null);
     setBusy(true);
@@ -140,6 +160,9 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
       await api.joinVoiceChannel(groupId, channelId);
       await api.setMicThresholdDb(getMicThresholdDb());
       if (pttEnabled) await api.setMicMuted(true);
+      // Asks the backend rather than assuming `pttEnabled` — it's the
+      // actual source of truth, and it's what just got set two lines up.
+      setMuted(await api.getMicMuted());
       setJoined(true);
       playVoiceJoinSound();
     } catch (err) {
@@ -168,6 +191,8 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
   async function toggleMuted() {
     const next = !muted;
     setMuted(next);
+    if (next) playMicMutedSound();
+    else playMicUnmutedSound();
     try {
       await api.setMicMuted(next);
     } catch (err) {

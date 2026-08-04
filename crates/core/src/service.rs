@@ -22,6 +22,18 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+/// Whether a multiaddr's IP component is loopback — used to prefer
+/// LAN-reachable addresses over `127.0.0.1`/`::1` when announcing presence,
+/// since a loopback address is only ever useful to something on this same
+/// machine.
+fn is_loopback_addr(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| match p {
+        libp2p::multiaddr::Protocol::Ip4(ip) => ip.is_loopback(),
+        libp2p::multiaddr::Protocol::Ip6(ip) => ip.is_loopback(),
+        _ => false,
+    })
+}
+
 /// Attachments are capped at the application level (Discord's long-standing
 /// default), enforced here so an oversized file never reaches the P2P
 /// transport at all, regardless of what the transport's own size limits
@@ -100,6 +112,21 @@ impl From<GroupRecord> for GroupInfo {
 /// Ties identity, local encrypted storage, the directory rendezvous client,
 /// and the P2P chat node into the single service a Tauri command layer (or
 /// any other frontend) calls into. Nothing here is UI-specific.
+/// Aborts the presence-heartbeat background task when this `AppService`
+/// (and so this guard) is dropped — e.g. when an account is switched out.
+/// `AccountManager`'s own doc comment already documents the mechanism this
+/// relies on: dropping the last `ActorHandle` clone ends that account's
+/// actor task, which drops its `AppService`, which drops this. Without it,
+/// a switched-away-from account's heartbeat would just keep announcing in
+/// the background forever.
+struct HeartbeatGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for HeartbeatGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub struct AppService {
     pub node: ChatNode,
     directory: DirectoryClient,
@@ -107,6 +134,7 @@ pub struct AppService {
     display_name: String,
     voice_call: Option<VoiceCallState>,
     voice_call_last_heartbeat: Option<std::time::Instant>,
+    _presence_heartbeat: HeartbeatGuard,
 }
 
 impl AppService {
@@ -122,7 +150,13 @@ impl AppService {
     ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&data_dir)?;
         let keychain = Keychain::for_app_data_dir(&data_dir)?;
-        let kek = keychain.load_or_create_kek()?;
+        // Reading (or, on first run, creating) the KEK can now involve a
+        // blocking, interactive Touch ID/password prompt on macOS (see
+        // `identity::Keychain`) — run it off the async runtime's worker
+        // threads so a slow or ignored prompt can't tie one up.
+        let kek = tokio::task::spawn_blocking(move || keychain.load_or_create_kek())
+            .await
+            .expect("keychain blocking task panicked")?;
         let store = LocalStore::open(&data_dir.join("local.sqlite3"), kek)?;
 
         let stored = store.load_identity()?;
@@ -138,7 +172,7 @@ impl AppService {
             }
         };
 
-        let directory = DirectoryClient::new(directory_url);
+        let directory = DirectoryClient::new(directory_url.clone());
 
         // Registration is idempotent and cheap: always re-assert on
         // startup, since the directory server may have been purged since
@@ -173,43 +207,81 @@ impl AppService {
             .await?;
         identity.account_mut().mark_keys_as_published();
 
-        store.save_identity(
-            &identity.user_id(),
-            &display_name,
-            &identity.pickle_to_json()?,
-            now(),
-        )?;
+        let pickle_json = identity.pickle_to_json()?;
+        store.save_identity(&identity.user_id(), &display_name, &pickle_json, now())?;
 
-        // Loopback for now, not 0.0.0.0: binding all interfaces means the
-        // swarm can emit a `NewListenAddr` per interface in an
-        // unpredictable order. Fine for same-machine use (including this
-        // crate's own tests); real LAN/WAN reachability needs the
-        // relay/autonat path this workspace already has wired at the
-        // transport layer, layered in properly once there's a UI to
-        // surface connectivity state through.
+        // 0.0.0.0, not loopback: gets two machines on the same LAN actually
+        // talking to each other. Binding all interfaces means the swarm can
+        // emit a `NewListenAddr` per interface (Wi-Fi, Ethernet, a VPN
+        // adapter, ...) in unpredictable order, so every non-loopback
+        // address that shows up within a short settle window gets
+        // advertised below, not just whichever one enumerated first — the
+        // request-response dial (`send_request_with_addresses`) already
+        // tries every address on a contact, so handing it more candidates
+        // than exactly one is safe, not just tolerated.
+        //
+        // Still doesn't cover peers on a different network/behind a NAT
+        // that can't be reached by any of these addresses directly — that
+        // needs the relay/autonat path this workspace already has wired at
+        // the transport layer, layered in properly as a follow-up once
+        // there's a relay to actually dial through.
         //
         // TCP only for now, not QUIC: this is the first place in the
         // workspace that would actually bind a QUIC listener (earlier
         // phases only ever listened on TCP), and it needs its own look
         // before relying on it.
         let mut node = ChatNode::new(identity)?;
-        node.listen_on(Multiaddr::from_str("/ip4/127.0.0.1/tcp/0")?)?;
+        node.listen_on(Multiaddr::from_str("/ip4/0.0.0.0/tcp/0")?)?;
 
-        // One-shot presence announce at startup (not a recurring heartbeat
-        // yet; a known follow-up). A 300s TTL is the server's own cap, so
-        // presence naturally expires if the app runs longer than that
-        // without restarting; contacts just won't find a fresh address
-        // until it's renewed.
-        let addr = node.wait_for_listen_addr().await;
+        // First announce at startup, immediately followed below by a
+        // recurring heartbeat so it doesn't just expire after the server's
+        // 300s TTL cap.
+        let listen_addrs = node
+            .wait_for_listen_addrs(std::time::Duration::from_millis(300))
+            .await;
+        let non_loopback: Vec<&Multiaddr> = listen_addrs
+            .iter()
+            .filter(|a| !is_loopback_addr(a))
+            .collect();
+        // Prefer real, LAN-reachable addresses, but fall back to whatever
+        // actually got bound (even loopback-only) rather than advertising
+        // nothing — a network-isolated sandbox/CI environment may not
+        // enumerate any non-loopback interface at all, and this crate's own
+        // tests dial contacts by these addresses within the same process.
+        let addrs: Vec<String> = if non_loopback.is_empty() {
+            listen_addrs.iter().map(|a| a.to_string()).collect()
+        } else {
+            non_loopback.iter().map(|a| a.to_string()).collect()
+        };
+        let peer_id_str = node.local_peer_id().to_string();
         directory
-            .put_presence(
-                &node.identity,
-                &node.local_peer_id().to_string(),
-                vec![addr.to_string()],
-                vec![],
-                300,
-            )
+            .put_presence(&node.identity, &peer_id_str, addrs.clone(), vec![], 300)
             .await?;
+
+        // Recurring heartbeat, so presence survives past the one-shot
+        // announce's 300s TTL for as long as the app keeps running. Runs on
+        // its own task since `AppService` is owned single-threaded by one
+        // actor loop (see `apps/desktop/src-tauri/src/actor.rs`) — it can't
+        // safely share live access to `node`'s swarm across tasks, so
+        // `get_multiaddrs` re-announces the same addresses captured above
+        // on every tick rather than re-querying the swarm for new ones;
+        // still a real improvement over no heartbeat at all, since the
+        // point is keeping the existing record from expiring. A *second*,
+        // independent `Identity` is built from the same pickle rather than
+        // sharing `node.identity` — `Identity` wraps a `vodozemac::olm`
+        // `Account`, which isn't `Clone`, and `ChatNode.identity` isn't
+        // behind an `Arc`, so this avoids reworking that field's type just
+        // for this. 150s (half the server's 300s TTL cap) keeps a healthy
+        // margin before expiry rather than cutting it close.
+        let heartbeat_identity = std::sync::Arc::new(Identity::from_pickle_json(&pickle_json)?);
+        let heartbeat_addrs = addrs;
+        let heartbeat_handle = tokio::spawn(net::presence::run_presence_heartbeat_loop(
+            directory_url,
+            heartbeat_identity,
+            peer_id_str,
+            move || heartbeat_addrs.clone(),
+            std::time::Duration::from_secs(150),
+        ));
 
         // Re-subscribe to groups we're already in so we keep receiving
         // messages; our own ability to *send* in a group we created before
@@ -226,6 +298,7 @@ impl AppService {
             display_name,
             voice_call: None,
             voice_call_last_heartbeat: None,
+            _presence_heartbeat: HeartbeatGuard(heartbeat_handle),
         })
     }
 
@@ -282,6 +355,7 @@ impl AppService {
             &user.display_name,
             &user.ed25519_key,
             &user.curve25519_key,
+            now(),
         )?;
 
         let presence = self.directory.get_presence(user_id).await?;
@@ -301,6 +375,12 @@ impl AppService {
         // the surviving one.
         self.node
             .add_contact(&user.user_id, &user.curve25519_key, peer_id, addrs);
+        Ok(())
+    }
+
+    pub fn remove_contact(&mut self, user_id: &str) -> anyhow::Result<()> {
+        self.store.remove_contact(user_id)?;
+        self.node.remove_contact(user_id);
         Ok(())
     }
 
@@ -377,6 +457,67 @@ impl AppService {
         Ok(updated.into())
     }
 
+    /// Owner-only (enforced server-side, same `update_roster` route as
+    /// `invite_to_group`). Rotates the *caller's own* outbound Megolm
+    /// session afterward and re-shares it with everyone left, so the
+    /// removed member can't read anything the caller sends from here on —
+    /// see `rotate_group_key`'s doc comment for what this does and doesn't
+    /// guarantee (it doesn't make *other* remaining members rotate theirs).
+    pub async fn remove_member_from_group(
+        &mut self,
+        group_id: &str,
+        member_user_id: &str,
+    ) -> anyhow::Result<GroupInfo> {
+        let current = self.directory.get_group(group_id).await?;
+        let updated = self
+            .directory
+            .update_roster(
+                &self.node.identity,
+                group_id,
+                vec![],
+                vec![member_user_id.to_string()],
+                current.roster_version,
+            )
+            .await?;
+        self.persist_group(&updated)?;
+
+        // Excludes the caller: `share_group_key` looks the target up as a
+        // `Contact`, and you're not your own contact — including yourself
+        // here would error out of the loop before reaching anyone after it.
+        let my_id = self.user_id();
+        let remaining_member_ids: Vec<String> = updated
+            .members
+            .iter()
+            .map(|m| m.user_id.clone())
+            .filter(|id| *id != my_id)
+            .collect();
+        self.node
+            .rotate_group_key(group_id, &remaining_member_ids)?;
+        Ok(updated.into())
+    }
+
+    /// Removes yourself from a group's roster and drops it from local
+    /// storage. Doesn't rotate anyone's Megolm key: `rotate_group_key`
+    /// only ever rotates *the caller's own* outbound session, and rotating
+    /// your own session on the way out protects nobody — the members who
+    /// actually stay would need to rotate theirs, which nothing currently
+    /// triggers automatically on a plain self-removal (same known gap
+    /// noted on `remove_member_from_group`/`rotate_group_key`).
+    pub async fn leave_group(&mut self, group_id: &str) -> anyhow::Result<()> {
+        let current = self.directory.get_group(group_id).await?;
+        self.directory
+            .update_roster(
+                &self.node.identity,
+                group_id,
+                vec![],
+                vec![self.user_id()],
+                current.roster_version,
+            )
+            .await?;
+        self.store.delete_group(group_id)?;
+        Ok(())
+    }
+
     pub async fn send_group_message(
         &mut self,
         group_id: &str,
@@ -398,11 +539,15 @@ impl AppService {
         Ok(())
     }
 
-    /// Owner-only (enforced server-side, see
-    /// `directory-server`'s `create_channel` route). Every channel is
-    /// visible to every group member in this phase (no per-channel
-    /// permissions), so this doesn't touch Megolm/gossipsub at all; it
-    /// only adds a routable id, persisted like any other group metadata.
+    /// Owner-only (enforced server-side, see `directory-server`'s
+    /// `create_channel` route). The channel itself is just routable
+    /// metadata on the directory server, not a new Megolm/gossipsub
+    /// dimension — but other members still need to *learn* it exists, so
+    /// this broadcasts a `GroupPayload::ChannelsChanged` nudge over the
+    /// group's existing topic afterward (best-effort: a publish failure
+    /// here doesn't undo the channel, which the server already has: anyone
+    /// online receives the nudge and refetches, anyone who isn't catches up
+    /// via `refresh_group` the next time they open the group instead).
     pub async fn create_channel(
         &mut self,
         group_id: &str,
@@ -416,6 +561,22 @@ impl AppService {
         // Re-fetch the whole group so the new channel is persisted
         // alongside everything else, with server-assigned position intact,
         // and the caller gets back the same shape `list_groups` uses.
+        let group = self.directory.get_group(group_id).await?;
+        self.persist_group(&group)?;
+        if let Err(e) = self.node.send_channels_changed(group_id) {
+            tracing::warn!(error = %e, group_id, "failed to announce the new channel to other members");
+        }
+        Ok(group.into())
+    }
+
+    /// Re-fetches a group's current state from the directory server and
+    /// persists it locally — the directory server is the source of truth
+    /// for group/channel metadata (unlike messages, which never touch it).
+    /// Called reactively when a fellow member's `GroupChannelsChanged`
+    /// announcement arrives (see `next_event`), and also exposed directly
+    /// (`commands::refresh_group`) so the frontend can force one, e.g. right
+    /// when a group is opened, in case that announcement was missed.
+    pub async fn refresh_group(&mut self, group_id: &str) -> anyhow::Result<GroupInfo> {
         let group = self.directory.get_group(group_id).await?;
         self.persist_group(&group)?;
         Ok(group.into())
@@ -554,14 +715,23 @@ impl AppService {
                     }
                     return event;
                 }
+                ChatEvent::GroupChannelsChanged { ref group_id } => {
+                    // A fellow member created a channel: refetch so it shows
+                    // up here too instead of only ever existing for them.
+                    if let Err(e) = self.refresh_group(&group_id.clone()).await {
+                        tracing::warn!(error = %e, group_id = %group_id, "failed to refresh a group after a channels-changed announcement");
+                    }
+                    return event;
+                }
                 ChatEvent::VoicePresence {
                     group_id,
                     channel_id,
                     from,
                     joined,
                 } => {
-                    if let Some(translated) =
-                        self.handle_voice_presence(group_id, channel_id, from, joined).await
+                    if let Some(translated) = self
+                        .handle_voice_presence(group_id, channel_id, from, joined)
+                        .await
                     {
                         return translated;
                     }
@@ -653,18 +823,26 @@ impl AppService {
     /// machinery and announces our presence to the rest of the group. Only
     /// one call is active at a time: joining a different channel first
     /// leaves whichever one we were already in.
-    pub async fn join_voice_channel(&mut self, group_id: &str, channel_id: &str) -> anyhow::Result<()> {
+    pub async fn join_voice_channel(
+        &mut self,
+        group_id: &str,
+        channel_id: &str,
+    ) -> anyhow::Result<()> {
         if self.voice_call.is_some() {
             self.leave_voice_channel()?;
         }
         let control = self.node.voice_control();
-        let call = VoiceCallState::start(group_id.to_string(), channel_id.to_string(), control).await?;
+        let call =
+            VoiceCallState::start(group_id.to_string(), channel_id.to_string(), control).await?;
         // A failure here (e.g. gossipsub's mesh for this topic hasn't
         // finished forming yet) is transient and shouldn't block joining
         // the call itself; leaving `voice_call_last_heartbeat` unset makes
         // the very next `maybe_send_voice_heartbeat` retry immediately
         // rather than waiting out a full heartbeat interval.
-        self.voice_call_last_heartbeat = match self.node.send_voice_presence(group_id, channel_id, true) {
+        self.voice_call_last_heartbeat = match self
+            .node
+            .send_voice_presence(group_id, channel_id, true)
+        {
             Ok(()) => Some(std::time::Instant::now()),
             Err(e) => {
                 tracing::warn!(error = %e, group_id, channel_id, "initial voice presence announce failed, will retry");
@@ -687,7 +865,10 @@ impl AppService {
         // announce makes it out; a lost departure announcement just means
         // other participants find out we're gone when our heartbeat lapses
         // instead of immediately, not that we failed to leave.
-        if let Err(e) = self.node.send_voice_presence(&call.group_id, &call.channel_id, false) {
+        if let Err(e) = self
+            .node
+            .send_voice_presence(&call.group_id, &call.channel_id, false)
+        {
             tracing::warn!(error = %e, "failed to announce leaving the voice channel");
         }
         self.voice_call_last_heartbeat = None;
@@ -706,8 +887,33 @@ impl AppService {
         }
     }
 
+    /// `false` outside an active call, same as `set_mic_muted`. Exists so
+    /// the frontend has a way to ask "am I actually muted right now?"
+    /// instead of only ever tracking its own optimistic local guess — no
+    /// such query existed before, which is part of what let the UI and the
+    /// real backend state drift out of sync.
+    pub fn is_mic_muted(&self) -> bool {
+        self.voice_call.as_ref().is_some_and(|call| call.is_muted())
+    }
+
+    /// Flips the current mute state and returns the new one — a no-op
+    /// (returns `false`) outside an active call, same as `set_mic_muted`.
+    /// Used by the tray menu's mic-mute item, which has no other way to
+    /// know the current state before deciding which way to flip it.
+    pub fn toggle_mic_muted(&self) -> bool {
+        let Some(call) = &self.voice_call else {
+            return false;
+        };
+        let new_muted = !call.is_muted();
+        call.set_muted(new_muted);
+        new_muted
+    }
+
     pub fn voice_participants(&self) -> Vec<String> {
-        self.voice_call.as_ref().map(|c| c.participants()).unwrap_or_default()
+        self.voice_call
+            .as_ref()
+            .map(|c| c.participants())
+            .unwrap_or_default()
     }
 
     /// The noise-gate threshold (dBFS) below which captured mic audio is
@@ -760,9 +966,14 @@ impl AppService {
         // wait out a full heartbeat interval, otherwise a slow-forming
         // mesh could mean only one or two real attempts in a given window
         // instead of fast retries until it's ready.
-        match self.node.send_voice_presence(&call.group_id, &call.channel_id, true) {
+        match self
+            .node
+            .send_voice_presence(&call.group_id, &call.channel_id, true)
+        {
             Ok(()) => self.voice_call_last_heartbeat = Some(std::time::Instant::now()),
-            Err(e) => tracing::warn!(error = %e, "failed to send voice presence heartbeat, will retry"),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to send voice presence heartbeat, will retry")
+            }
         }
     }
 }

@@ -9,8 +9,8 @@ mod server_config;
 use std::path::PathBuf;
 
 use account_manager::AccountManager;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
 
 /// Filesystem locations resolved once at startup and needed before any
@@ -23,9 +23,10 @@ pub struct AppPaths {
     pub shared_data_dir: PathBuf,
 }
 
-/// Shows and focuses the main window — used by the tray icon's "Open Seal"
-/// item, a left-click on the tray icon itself, and macOS's Dock-icon-click
-/// ("reopen") event, all of which need to undo the same hide-to-tray state.
+/// Shows and focuses the main window — used by the tray icon menu's "Open
+/// Seal" item (shown on both left- and right-click) and macOS's
+/// Dock-icon-click ("reopen") event, both of which need to undo the same
+/// hide-to-tray state.
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -79,27 +80,42 @@ pub fn run() {
             }
 
             let show_item = MenuItem::with_id(app, "show", "Open Seal", true, None::<&str>)?;
+            let toggle_mic_item =
+                MenuItem::with_id(app, "toggle_mic", "Toggle Mic Mute", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Seal", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let tray_menu = Menu::with_items(
+                app,
+                &[
+                    &show_item,
+                    &toggle_mic_item,
+                    &PredefinedMenuItem::separator(app)?,
+                    &quit_item,
+                ],
+            )?;
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&tray_menu)
-                .show_menu_on_left_click(false)
+                // Left-click showing the same menu as right-click (rather
+                // than the old behavior of left-click reopening the window
+                // directly) is the whole point — `Menu::with_items`+`.menu()`
+                // already makes the OS show it on right-click for free, this
+                // is what actually needed to change. "Open Seal" in the menu
+                // covers the direct-reopen case that used to be left-click's
+                // own hardcoded behavior.
+                .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
+                    "toggle_mic" => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Ok(handle) = app.state::<AccountManager>().current().await {
+                                let _ = handle.toggle_mic_muted().await;
+                            }
+                        });
+                    }
                     "quit" => app.exit(0),
                     _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main_window(tray.app_handle());
-                    }
                 })
                 .build(app)?;
 
@@ -117,18 +133,23 @@ pub fn run() {
             commands::rename_account,
             commands::remove_account,
             commands::add_contact,
+            commands::remove_contact,
             commands::list_contacts,
             commands::send_direct_message,
             commands::list_messages,
             commands::create_group,
             commands::invite_to_group,
+            commands::remove_member_from_group,
+            commands::leave_group,
             commands::create_channel,
             commands::send_group_message,
             commands::list_groups,
+            commands::refresh_group,
             commands::join_voice_channel,
             commands::leave_voice_channel,
             commands::set_voice_changer_enabled,
             commands::set_mic_muted,
+            commands::get_mic_muted,
             commands::get_voice_participants,
             commands::set_mic_threshold_db,
             commands::set_hear_self,

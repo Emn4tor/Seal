@@ -1,5 +1,5 @@
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::accounts::{AccountEntry, BootDecision};
@@ -270,9 +270,14 @@ impl TryFrom<p2p_core::ChatEvent> for ChatEventDto {
             // is always intercepted by `AppService::next_event` itself
             // (translated into `VoiceParticipantsChanged` above, or
             // swallowed if irrelevant) — it should never reach here.
+            // `GroupChannelsChanged` likewise has no frontend-visible shape
+            // of its own — its only effect is the `groups-updated` Tauri
+            // event the actor already emits for it, which is what actually
+            // gets the frontend to refetch (see `actor.rs`).
             p2p_core::ChatEvent::Connected(_)
             | p2p_core::ChatEvent::GossipSubscribed { .. }
-            | p2p_core::ChatEvent::VoicePresence { .. } => Err(()),
+            | p2p_core::ChatEvent::VoicePresence { .. }
+            | p2p_core::ChatEvent::GroupChannelsChanged { .. } => Err(()),
         }
     }
 }

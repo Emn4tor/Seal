@@ -36,3 +36,18 @@ export function playVoiceJoinSound() {
 export function playVoiceLeaveSound() {
   playTone([660, 440], 90);
 }
+
+/** A single short, quiet blip for your own mic mute/unmute — deliberately
+ * not a two-note chime like join/leave: this can fire many times in quick
+ * succession (toggling back and forth), so it stays brief and low-key
+ * rather than announcing itself. An octave apart (370 Hz / 740 Hz) so
+ * "on"/"off" are unambiguous by ear alone. Only for an explicit toggle
+ * (the in-call mute button, the tray menu item) — never for push-to-talk's
+ * per-keypress mute/unmute, which would turn this into constant noise. */
+export function playMicMutedSound() {
+  playTone([370], 70);
+}
+
+export function playMicUnmutedSound() {
+  playTone([740], 70);
+}

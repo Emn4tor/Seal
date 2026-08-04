@@ -86,4 +86,13 @@ pub enum GroupPayload {
     /// short of asking. `joined: false` announces a deliberate leave rather
     /// than making everyone else wait for the heartbeat to simply stop.
     VoicePresence { channel_id: String, joined: bool },
+    /// Announces that the group's channel list changed (a channel was
+    /// created). Carries no data of its own — the directory server is the
+    /// source of truth for channel metadata, same as it is for the roster;
+    /// this is purely the "something changed, go re-fetch" nudge, mirroring
+    /// what `VoicePresence` does for voice-channel membership. A member who
+    /// was offline when this went out simply misses it (gossipsub has no
+    /// replay), which is what `AppService::refresh_group` being also
+    /// callable directly (not just reactively) is for.
+    ChannelsChanged,
 }

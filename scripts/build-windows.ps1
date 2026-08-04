@@ -13,6 +13,11 @@ if ($env:OS -ne "Windows_NT") {
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location (Join-Path $RepoRoot "apps\desktop")
 
+# Bakes the official Seal network in as the recommended server option on
+# the first-run screen — a build-time default, not a runtime lock-in;
+# "Custom server" and "Local test server" stay available regardless.
+$env:SEAL_DEFAULT_DIRECTORY_URL = "https://seal.emn4tor.de"
+
 npm install
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

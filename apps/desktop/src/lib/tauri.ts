@@ -36,6 +36,7 @@ export const api = {
     invoke<void>("rename_account", { newDisplayName }),
   removeAccount: (accountId: string) => invoke<void>("remove_account", { accountId }),
   addContact: (userId: string) => invoke<void>("add_contact", { userId }),
+  removeContact: (userId: string) => invoke<void>("remove_contact", { userId }),
   listContacts: () => invoke<Contact[]>("list_contacts"),
   sendDirectMessage: (peerUserId: string, body: string, attachment: Attachment | null) =>
     invoke<void>("send_direct_message", { peerUserId, body, attachment }),
@@ -43,6 +44,9 @@ export const api = {
   createGroup: (name: string) => invoke<Group>("create_group", { name }),
   inviteToGroup: (groupId: string, memberUserId: string) =>
     invoke<Group>("invite_to_group", { groupId, memberUserId }),
+  removeMemberFromGroup: (groupId: string, memberUserId: string) =>
+    invoke<Group>("remove_member_from_group", { groupId, memberUserId }),
+  leaveGroup: (groupId: string) => invoke<void>("leave_group", { groupId }),
   createChannel: (groupId: string, name: string, kind: ChannelKind) =>
     invoke<Group>("create_channel", { groupId, name, kind }),
   sendGroupMessage: (
@@ -52,12 +56,14 @@ export const api = {
     attachment: Attachment | null,
   ) => invoke<void>("send_group_message", { groupId, channelId, body, attachment }),
   listGroups: () => invoke<Group[]>("list_groups"),
+  refreshGroup: (groupId: string) => invoke<Group>("refresh_group", { groupId }),
   joinVoiceChannel: (groupId: string, channelId: string) =>
     invoke<void>("join_voice_channel", { groupId, channelId }),
   leaveVoiceChannel: () => invoke<void>("leave_voice_channel"),
   setVoiceChangerEnabled: (enabled: boolean) =>
     invoke<void>("set_voice_changer_enabled", { enabled }),
   setMicMuted: (muted: boolean) => invoke<void>("set_mic_muted", { muted }),
+  getMicMuted: () => invoke<boolean>("get_mic_muted"),
   getVoiceParticipants: () => invoke<string[]>("get_voice_participants"),
   setMicThresholdDb: (db: number) => invoke<void>("set_mic_threshold_db", { db }),
   setHearSelf: (enabled: boolean) => invoke<void>("set_hear_self", { enabled }),
@@ -81,4 +87,13 @@ export function onGroupsUpdated(handler: () => void): Promise<UnlistenFn> {
 
 export function onContactsUpdated(handler: () => void): Promise<UnlistenFn> {
   return listen("contacts-updated", () => handler());
+}
+
+/** Fired only when the tray menu's mic-mute item changes mute state — the
+ * one mute-state change with no JS caller already aware of the result
+ * (see `actor.rs`'s `Command::ToggleMicMuted`). Not fired for the manual
+ * in-call mute button or push-to-talk, which already know their own
+ * outcome without a round trip. */
+export function onMicMutedChanged(handler: (muted: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>("mic-muted-changed", (e) => handler(e.payload));
 }

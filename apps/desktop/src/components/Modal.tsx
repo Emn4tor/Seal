@@ -1,5 +1,6 @@
 import type { FormEvent } from "react";
 import { useState } from "react";
+import { useModalEscape } from "../lib/useModalEscape";
 
 interface ModalProps {
   title: string;
@@ -25,6 +26,8 @@ export function Modal({
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useModalEscape(onClose);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();

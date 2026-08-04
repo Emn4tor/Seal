@@ -29,12 +29,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use audio::adpcm::{BYTES_PER_FRAME, Decoder as AdpcmDecoder, Encoder as AdpcmEncoder, SAMPLES_PER_FRAME};
+use audio::adpcm::{
+    BYTES_PER_FRAME, Decoder as AdpcmDecoder, Encoder as AdpcmEncoder, SAMPLES_PER_FRAME,
+};
 use audio::pitch_shift::{DEFAULT_DISGUISE_RATIO, PitchShifter};
 use audio::resample::{FromTargetRate, ToTargetRate};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use futures::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use futures::StreamExt as _;
+use futures::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use libp2p::{PeerId, Stream};
 use libp2p_stream::Control;
 use tokio::sync::Mutex as AsyncMutex;
@@ -229,13 +231,18 @@ impl VoiceCallState {
     /// (`AppService`) is expected to have already sent the initial
     /// `VoicePresence { joined: true }` announcement and feeds subsequent
     /// presence events in via [`Self::note_presence`].
-    pub async fn start(group_id: String, channel_id: String, control: Control) -> anyhow::Result<Self> {
+    pub async fn start(
+        group_id: String,
+        channel_id: String,
+        control: Control,
+    ) -> anyhow::Result<Self> {
         let running = Arc::new(AtomicBool::new(true));
 
         let (mic_tx, mic_rx) = rtrb::RingBuffer::<f32>::new(RING_BUFFER_CAPACITY);
         let (speaker_tx, speaker_rx) = rtrb::RingBuffer::<f32>::new(RING_BUFFER_CAPACITY);
 
-        let (input_rate, output_rate) = spawn_audio_io_thread(mic_tx, speaker_rx, running.clone()).await;
+        let (input_rate, output_rate) =
+            spawn_audio_io_thread(mic_tx, speaker_rx, running.clone()).await;
 
         let muted = Arc::new(AtomicBool::new(false));
         let changer_enabled = Arc::new(AtomicBool::new(false));
@@ -255,7 +262,10 @@ impl VoiceCallState {
         // using `u64::MAX` guarantees that regardless of how many real
         // connections a call ever has).
         let self_monitor_id = u64::MAX;
-        jitter.lock().unwrap().insert(self_monitor_id, VecDeque::new());
+        jitter
+            .lock()
+            .unwrap()
+            .insert(self_monitor_id, VecDeque::new());
 
         let mut tasks = Vec::new();
 
@@ -344,6 +354,10 @@ impl VoiceCallState {
 
     pub fn set_muted(&self, muted: bool) {
         self.muted.store(muted, Ordering::Relaxed);
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed)
     }
 
     pub fn set_changer_enabled(&self, enabled: bool) {
@@ -479,7 +493,9 @@ impl VoiceCallState {
                     )
                     .await
                 }
-                Err(e) => tracing::warn!(error = %e, %peer_id, "failed to open a voice stream to a participant"),
+                Err(e) => {
+                    tracing::warn!(error = %e, %peer_id, "failed to open a voice stream to a participant")
+                }
             }
         });
     }
@@ -510,7 +526,12 @@ async fn register_connection(
         connection_user_ids.lock().unwrap().insert(id, user_id);
     }
     writers.lock().await.push((id, write_half));
-    tokio::spawn(run_reader_loop(id, read_half, jitter.clone(), connection_last_frame_at.clone()));
+    tokio::spawn(run_reader_loop(
+        id,
+        read_half,
+        jitter.clone(),
+        connection_last_frame_at.clone(),
+    ));
 }
 
 /// Reads fixed-size ADPCM frames off one peer's stream, decodes them with a
@@ -530,7 +551,10 @@ async fn run_reader_loop(
             break; // peer disconnected/left — just stop feeding the mixer for this connection.
         }
         let frame = decoder.decode_frame(&buf);
-        last_frame_at.lock().unwrap().insert(connection_id, Instant::now());
+        last_frame_at
+            .lock()
+            .unwrap()
+            .insert(connection_id, Instant::now());
         if let Some(queue) = jitter.lock().unwrap().get_mut(&connection_id) {
             queue.push_back(frame);
             // Bound memory if the mixer somehow stalls; a real jitter

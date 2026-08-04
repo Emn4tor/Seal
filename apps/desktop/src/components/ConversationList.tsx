@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Channel, Contact, Group, Selection } from "../lib/types";
 import { CipherSeal } from "./CipherSeal";
 
@@ -13,6 +14,8 @@ interface ConversationListProps {
   onAddContact: () => void;
   onInvite: () => void;
   onCreateChannel: (kind: "text" | "voice") => void;
+  onLeaveGroup?: () => Promise<void>;
+  onRemoveContact?: (userId: string) => Promise<void>;
 }
 
 function Avatar({ name }: { name: string }) {
@@ -99,7 +102,43 @@ export function ConversationList({
   onAddContact,
   onInvite,
   onCreateChannel,
+  onLeaveGroup,
+  onRemoveContact,
 }: ConversationListProps) {
+  const [confirmLeave, setConfirmLeave] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
+
+  const [confirmRemoveContactId, setConfirmRemoveContactId] = useState<string | null>(null);
+  const [removingContactId, setRemovingContactId] = useState<string | null>(null);
+  const [removeContactError, setRemoveContactError] = useState<string | null>(null);
+
+  async function handleLeave() {
+    if (!onLeaveGroup) return;
+    setLeaving(true);
+    setLeaveError(null);
+    try {
+      await onLeaveGroup();
+    } catch (err) {
+      setLeaveError(String(err));
+      setLeaving(false);
+    }
+  }
+
+  async function handleRemoveContact(userId: string) {
+    if (!onRemoveContact) return;
+    setRemovingContactId(userId);
+    setRemoveContactError(null);
+    try {
+      await onRemoveContact(userId);
+      setConfirmRemoveContactId(null);
+    } catch (err) {
+      setRemoveContactError(String(err));
+    } finally {
+      setRemovingContactId(null);
+    }
+  }
+
   if (mode === "group") {
     const isOwner = activeGroup?.members.some((m) => m.user_id === currentUserId && m.role === "owner") ?? false;
     const textChannels = activeGroup?.channels.filter((c) => c.kind === "text") ?? [];
@@ -136,6 +175,32 @@ export function ConversationList({
           >
             Invite people
           </button>
+          {onLeaveGroup &&
+            (confirmLeave ? (
+              <div className="mt-1.5 flex gap-1.5">
+                <button
+                  onClick={() => setConfirmLeave(false)}
+                  className="flex-1 rounded-md px-3 py-1.5 text-xs text-text-muted hover:bg-surface-raised"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleLeave}
+                  disabled={leaving}
+                  className="flex-1 rounded-md border border-danger-dim/40 py-1.5 text-xs font-medium text-danger transition hover:bg-danger/10 disabled:opacity-40"
+                >
+                  {leaving ? "Leaving…" : "Confirm"}
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmLeave(true)}
+                className="mt-1.5 w-full rounded-md py-1.5 text-xs font-medium text-text-faint transition hover:bg-danger/10 hover:text-danger"
+              >
+                Leave group
+              </button>
+            ))}
+          {leaveError && <p className="mt-2 text-[11px] text-danger">{leaveError}</p>}
         </div>
       </div>
     );
@@ -169,29 +234,60 @@ export function ConversationList({
           const active = selected?.kind === "dm" && selected.userId === c.user_id;
           const unreadCount = unread[c.user_id] ?? 0;
           return (
-            <button
-              key={c.user_id}
-              onClick={() => onSelectContact(c.user_id)}
-              className={`mb-0.5 flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition active:scale-[0.99] ${
-                active ? "bg-surface-raised" : "hover:bg-surface-raised/60"
-              }`}
-            >
-              <Avatar name={c.display_name} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="truncate text-[13.5px] font-medium text-text">{c.display_name}</span>
-                  {c.verified && <CipherSeal status="secure" size={12} />}
+            <div key={c.user_id} className="group/row relative mb-0.5">
+              <button
+                onClick={() => onSelectContact(c.user_id)}
+                className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition active:scale-[0.99] ${
+                  active ? "bg-surface-raised" : "hover:bg-surface-raised/60"
+                }`}
+              >
+                <Avatar name={c.display_name} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-[13.5px] font-medium text-text">{c.display_name}</span>
+                    {c.verified && <CipherSeal status="secure" size={12} />}
+                  </div>
+                  <p className="truncate font-mono text-[11px] text-text-faint">{c.user_id.slice(0, 12)}…</p>
                 </div>
-                <p className="truncate font-mono text-[11px] text-text-faint">{c.user_id.slice(0, 12)}…</p>
-              </div>
-              {unreadCount > 0 && (
-                <span className="flex h-4.5 min-w-4.5 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-semibold text-text">
-                  {unreadCount}
-                </span>
-              )}
-            </button>
+                {unreadCount > 0 && (
+                  <span className="flex h-4.5 min-w-4.5 shrink-0 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-semibold text-text">
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
+              {onRemoveContact &&
+                (confirmRemoveContactId === c.user_id ? (
+                  <div className="absolute right-2 top-1/2 z-10 flex -translate-y-1/2 gap-1 rounded-md bg-surface-raised px-1 py-0.5 shadow-lg">
+                    <button
+                      onClick={() => setConfirmRemoveContactId(null)}
+                      className="rounded px-1.5 py-0.5 text-[11px] text-text-muted hover:bg-surface"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => handleRemoveContact(c.user_id)}
+                      disabled={removingContactId === c.user_id}
+                      className="rounded px-1.5 py-0.5 text-[11px] font-medium text-danger hover:bg-danger/10 disabled:opacity-40"
+                    >
+                      {removingContactId === c.user_id ? "…" : "Confirm"}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmRemoveContactId(c.user_id);
+                    }}
+                    aria-label={`Remove ${c.display_name}`}
+                    className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] text-text-faint opacity-0 transition hover:bg-danger/10 hover:text-danger group-hover/row:opacity-100"
+                  >
+                    Remove
+                  </button>
+                ))}
+            </div>
           );
         })}
+        {removeContactError && <p className="px-2.5 py-1 text-[11px] text-danger">{removeContactError}</p>}
       </div>
     </div>
   );

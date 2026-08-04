@@ -16,7 +16,10 @@ pub fn voice_protocol() -> StreamProtocol {
 
 /// Opens an outbound voice stream to `peer`, dialing them if not already
 /// connected.
-pub async fn open_voice_stream(control: &mut Control, peer: PeerId) -> Result<Stream, OpenStreamError> {
+pub async fn open_voice_stream(
+    control: &mut Control,
+    peer: PeerId,
+) -> Result<Stream, OpenStreamError> {
     control.open_stream(peer, voice_protocol()).await
 }
 

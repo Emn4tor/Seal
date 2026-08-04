@@ -66,6 +66,25 @@ impl LocalStore {
         Ok(())
     }
 
+    /// Drops a group and its members/channels entirely — for leaving or
+    /// being removed from it, where (unlike `upsert_group`) there's no
+    /// replacement roster to reinsert afterward. Mirrors `upsert_group`'s
+    /// own manual delete-from-each-table approach rather than assuming a
+    /// cascading foreign key exists.
+    pub fn delete_group(&self, group_id: &str) -> Result<(), StorageError> {
+        self.conn.execute(
+            "DELETE FROM group_members WHERE group_id = ?1",
+            params![group_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM channels WHERE group_id = ?1",
+            params![group_id],
+        )?;
+        self.conn
+            .execute("DELETE FROM groups WHERE group_id = ?1", params![group_id])?;
+        Ok(())
+    }
+
     pub fn list_groups(&self) -> Result<Vec<StoredGroup>, StorageError> {
         let mut stmt = self
             .conn

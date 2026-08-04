@@ -63,8 +63,9 @@ impl ToTargetRate {
             let input_adapter = SequentialSliceOfVecs::new(&self.input_buf, CHANNELS, need)
                 .expect("input buffer sized to input_frames_next");
             let output_len = self.output_buf[0].len();
-            let mut output_adapter = SequentialSliceOfVecs::new_mut(&mut self.output_buf, CHANNELS, output_len)
-                .expect("output buffer sized to output_frames_max");
+            let mut output_adapter =
+                SequentialSliceOfVecs::new_mut(&mut self.output_buf, CHANNELS, output_len)
+                    .expect("output buffer sized to output_frames_max");
             let (_nbr_in, nbr_out) = self
                 .inner
                 .process_into_buffer(&input_adapter, &mut output_adapter, None)
@@ -109,13 +110,18 @@ impl FromTargetRate {
     /// of native-rate samples.
     pub fn push_frame(&mut self, frame: &[f32]) -> Vec<f32> {
         let need = self.inner.input_frames_next();
-        assert_eq!(frame.len(), need, "caller must feed exactly one fixed-size frame");
+        assert_eq!(
+            frame.len(),
+            need,
+            "caller must feed exactly one fixed-size frame"
+        );
         self.input_buf[0][..need].copy_from_slice(frame);
         let input_adapter = SequentialSliceOfVecs::new(&self.input_buf, CHANNELS, need)
             .expect("input buffer sized to input_frames_next");
         let output_len = self.output_buf[0].len();
-        let mut output_adapter = SequentialSliceOfVecs::new_mut(&mut self.output_buf, CHANNELS, output_len)
-            .expect("output buffer sized to output_frames_max");
+        let mut output_adapter =
+            SequentialSliceOfVecs::new_mut(&mut self.output_buf, CHANNELS, output_len)
+                .expect("output buffer sized to output_frames_max");
         let (_nbr_in, nbr_out) = self
             .inner
             .process_into_buffer(&input_adapter, &mut output_adapter, None)
@@ -180,6 +186,9 @@ mod tests {
         }
         assert!(!reconstructed.is_empty());
         let peak = reconstructed.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        assert!(peak > 0.3, "round-tripped tone lost too much amplitude: peak={peak}");
+        assert!(
+            peak > 0.3,
+            "round-tripped tone lost too much amplitude: peak={peak}"
+        );
     }
 }

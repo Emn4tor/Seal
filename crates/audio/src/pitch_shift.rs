@@ -224,7 +224,10 @@ mod tests {
         // Drop the leading analysis-window latency and trailing partial
         // hop so only steady-state shifted signal is measured.
         let steady = &output[FRAME_SIZE.min(output.len())..];
-        assert!(steady.len() > 4000, "not enough steady-state output to analyze");
+        assert!(
+            steady.len() > 4000,
+            "not enough steady-state output to analyze"
+        );
 
         let measured = dominant_frequency(steady, sample_rate);
         let expected = input_freq * DEFAULT_DISGUISE_RATIO;

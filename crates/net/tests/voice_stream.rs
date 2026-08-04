@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use futures::io::{AsyncReadExt, AsyncWriteExt};
 use futures::StreamExt;
+use futures::io::{AsyncReadExt, AsyncWriteExt};
 use libp2p::core::multiaddr::Protocol;
 use libp2p::swarm::SwarmEvent;
 use net::{accept_voice_streams, build_swarm_with_new_identity, open_voice_stream};
@@ -71,7 +71,10 @@ async fn two_swarms_exchange_audio_shaped_frames_over_a_voice_stream() {
     .expect("timed out opening voice stream")
     .expect("open voice stream from b to a");
 
-    stream_b.write_all(&sent_frame).await.expect("write frame on b");
+    stream_b
+        .write_all(&sent_frame)
+        .await
+        .expect("write frame on b");
 
     let mut echoed = [0u8; FRAME_LEN];
     tokio::time::timeout(Duration::from_secs(15), stream_b.read_exact(&mut echoed))

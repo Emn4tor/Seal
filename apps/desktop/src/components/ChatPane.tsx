@@ -1,7 +1,7 @@
 import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri";
-import type { Attachment, Message } from "../lib/types";
+import type { Attachment, Contact, Message } from "../lib/types";
 import { CipherSeal, type SealStatus } from "./CipherSeal";
 import { ImageLightbox } from "./ImageLightbox";
 
@@ -13,6 +13,21 @@ interface ChatPaneProps {
   currentUserId: string;
   onSend: (body: string, attachment: Attachment | null) => Promise<void>;
   placeholder: string;
+  /** Whether this is a group conversation — sender names are only shown
+   * here, never in a DM, where the header already says who you're
+   * talking to. */
+  isGroup?: boolean;
+  /** Only needed when `isGroup` is set, to resolve a sender's display
+   * name — a group message only carries `sender_user_id` on the wire. */
+  contacts?: Contact[];
+  /** Set when this conversation's message history failed to load — shown
+   * above whatever messages are already cached, rather than replacing
+   * them, since a failed refresh doesn't mean the cached ones are wrong. */
+  loadError?: string | null;
+}
+
+function senderName(contacts: Contact[] | undefined, userId: string): string {
+  return contacts?.find((c) => c.user_id === userId)?.display_name ?? `${userId.slice(0, 8)}…`;
 }
 
 function formatTime(unixSeconds: number) {
@@ -93,12 +108,24 @@ function AttachmentBubble({ attachment }: { attachment: Attachment }) {
   );
 }
 
-export function ChatPane({ title, subtitle, sealStatus, messages, currentUserId, onSend, placeholder }: ChatPaneProps) {
+export function ChatPane({
+  title,
+  subtitle,
+  sealStatus,
+  messages,
+  currentUserId,
+  onSend,
+  placeholder,
+  isGroup,
+  contacts,
+  loadError,
+}: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [pendingAttachment, setPendingAttachment] = useState<Attachment | null>(null);
   const [stripExif, setStripExif] = useState(true);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -120,11 +147,18 @@ export function ChatPane({ title, subtitle, sealStatus, messages, currentUserId,
     const body = draft.trim();
     if ((!body && !pendingAttachment) || sending) return;
     setSending(true);
+    setSendError(null);
     const attachment = pendingAttachment;
     setDraft("");
     setPendingAttachment(null);
     try {
       await onSend(body, attachment);
+    } catch (err) {
+      // Restore what was cleared optimistically above — a failed send
+      // shouldn't cost you the message you typed.
+      setDraft(body);
+      setPendingAttachment(attachment);
+      setSendError(String(err));
     } finally {
       setSending(false);
     }
@@ -141,6 +175,7 @@ export function ChatPane({ title, subtitle, sealStatus, messages, currentUserId,
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4">
+        {loadError && <p className="mb-2 text-center text-xs text-danger">{loadError}</p>}
         {messages.length === 0 && (
           <div className="flex h-full items-center justify-center">
             <p className="max-w-xs text-center text-sm text-text-faint">{placeholder}</p>
@@ -152,6 +187,11 @@ export function ChatPane({ title, subtitle, sealStatus, messages, currentUserId,
             return (
               <div key={i} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
                 <div className={`max-w-[65%] ${mine ? "items-end" : "items-start"} flex flex-col gap-1.5`}>
+                  {!mine && isGroup && (
+                    <span className="px-1 text-[12px] font-medium text-text-muted">
+                      {senderName(contacts, m.sender_user_id)}
+                    </span>
+                  )}
                   {m.attachment && <AttachmentBubble attachment={m.attachment} />}
                   {m.body && (
                     <div
@@ -195,6 +235,7 @@ export function ChatPane({ title, subtitle, sealStatus, messages, currentUserId,
           </div>
         )}
         {attachError && <p className="mb-2 text-xs text-danger">{attachError}</p>}
+        {sendError && <p className="mb-2 text-xs text-danger">{sendError}</p>}
         <div className="flex items-center gap-2 rounded-xl border border-border bg-surface px-3.5 py-2 transition-colors focus-within:border-brass-dim">
           <button
             type="button"

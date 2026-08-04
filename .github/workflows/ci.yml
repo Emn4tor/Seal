@@ -10,9 +10,25 @@ env:
 
 jobs:
   rust:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # `apps/desktop/src-tauri` is a workspace member, so `cargo test`/
+      # `clippy` below already compile the actual Tauri app on each OS, not
+      # just the platform-independent crates — this is the whole reason to
+      # run this job as a matrix instead of macOS-only: it's the only thing
+      # that would ever catch a Windows/Linux-specific compile error (tray
+      # icon, autostart, WebView2/WebKitGTK differences, ...).
+      - name: install Linux Tauri build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -23,9 +39,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
+      # Platform-independent (an advisory-DB lookup against Cargo.lock), so
+      # only run once rather than installing cargo-audit on all three.
       - name: install cargo-audit
+        if: matrix.os == 'ubuntu-latest'
         run: cargo install cargo-audit --locked
       - name: audit
+        if: matrix.os == 'ubuntu-latest'
         run: cargo audit
 
   frontend:
@@ -42,3 +62,4 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
       - run: npm run build
+      - run: npm run test

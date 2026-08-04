@@ -19,8 +19,12 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 #[ignore = "opens the real default microphone; run explicitly with `cargo test -- --ignored`"]
 fn capture_resample_pitch_shift_adpcm_round_trip_on_real_hardware() {
     let host = cpal::default_host();
-    let input = host.default_input_device().expect("no default microphone on this machine");
-    let config = input.default_input_config().expect("no default input config");
+    let input = host
+        .default_input_device()
+        .expect("no default microphone on this machine");
+    let config = input
+        .default_input_config()
+        .expect("no default input config");
     assert_eq!(
         config.sample_format(),
         cpal::SampleFormat::F32,
@@ -54,10 +58,17 @@ fn capture_resample_pitch_shift_adpcm_round_trip_on_real_hardware() {
     drop(stream);
 
     let raw = captured.lock().unwrap().clone();
-    assert!(raw.len() > (native_rate as usize), "captured suspiciously little audio: {} samples", raw.len());
+    assert!(
+        raw.len() > (native_rate as usize),
+        "captured suspiciously little audio: {} samples",
+        raw.len()
+    );
 
     let raw_peak = raw.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-    println!("captured {} raw samples, peak amplitude {raw_peak:.4}", raw.len());
+    println!(
+        "captured {} raw samples, peak amplitude {raw_peak:.4}",
+        raw.len()
+    );
 
     // The exact pipeline crates/core/src/voice.rs runs for a live call.
     let mut down = ToTargetRate::new(native_rate, SAMPLES_PER_FRAME);
@@ -78,7 +89,10 @@ fn capture_resample_pitch_shift_adpcm_round_trip_on_real_hardware() {
             }
             let encoded = encoder.encode_frame(&frame_i16);
             let decoded = decoder.decode_frame(&encoded);
-            let decoded_f32: Vec<f32> = decoded.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+            let decoded_f32: Vec<f32> = decoded
+                .iter()
+                .map(|&s| s as f32 / i16::MAX as f32)
+                .collect();
             round_tripped.extend(up.push_frame(&decoded_f32));
         }
     }

@@ -45,6 +45,15 @@ export default function App() {
   const [splashDone, setSplashDone] = useState(false);
   const [bootError, setBootError] = useState<string | null>(null);
   const [serverUrl, setServerUrl] = useState<string | null>(null);
+  // The raw choice as saved/passed to `startBackend` — e.g. the literal
+  // "embedded" sentinel — as opposed to `serverUrl`, which is always the
+  // *resolved* connectable URL (`start_backend` turns "embedded" into a
+  // real `http://127.0.0.1:47100`-style address). Settings' "change
+  // server" flow needs this raw form: pre-filling and re-saving the
+  // resolved URL instead of the sentinel silently converts "use the local
+  // embedded server" into a hardcoded address nothing will be listening on
+  // the next time the embedded server picks a fresh port/needs restarting.
+  const [savedServerChoice, setSavedServerChoice] = useState<string | null>(null);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [onboardingMode, setOnboardingMode] = useState<"first" | "add">("first");
@@ -55,6 +64,7 @@ export default function App() {
   const [createChannelKind, setCreateChannelKind] = useState<ChannelKind>("text");
   const [showSettings, setShowSettings] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
+  const [messagesError, setMessagesError] = useState<string | null>(null);
 
   // Registered once for the app's whole lifetime, independent of login/boot
   // state — a real OS-level global shortcut (works no matter which app has
@@ -134,6 +144,7 @@ export default function App() {
   async function handleServerChosen(url: string) {
     const resolved = await api.startBackend(url);
     setServerUrl(resolved);
+    setSavedServerChoice(url);
     await bootAccounts(resolved);
   }
 
@@ -169,6 +180,7 @@ export default function App() {
       const resolved = await api.startBackend(saved);
       if (isCancelled()) return;
       setServerUrl(resolved);
+      setSavedServerChoice(saved);
       await bootAccounts(resolved);
     } catch (err) {
       if (isCancelled()) return;
@@ -303,7 +315,11 @@ export default function App() {
   useEffect(() => {
     if (!selected) return;
     const id = selected.kind === "dm" ? selected.userId : `${selected.groupId}:${selected.channelId}`;
-    api.listMessages(id).then((msgs) => setMessages(id, msgs));
+    setMessagesError(null);
+    api
+      .listMessages(id)
+      .then((msgs) => setMessages(id, msgs))
+      .catch((err) => setMessagesError(String(err)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
@@ -331,6 +347,28 @@ export default function App() {
     if (selected?.kind !== "group") return;
     const group = await api.inviteToGroup(selected.groupId, memberUserId);
     upsertGroup(group);
+  }
+
+  async function handleRemoveMember(memberUserId: string) {
+    if (selected?.kind !== "group") return;
+    const group = await api.removeMemberFromGroup(selected.groupId, memberUserId);
+    upsertGroup(group);
+  }
+
+  async function handleLeaveGroup() {
+    if (selected?.kind !== "group") return;
+    const groupId = selected.groupId;
+    await api.leaveGroup(groupId);
+    select(null);
+    await refreshGroups();
+  }
+
+  async function handleRemoveContact(contactUserId: string) {
+    await api.removeContact(contactUserId);
+    if (selected?.kind === "dm" && selected.userId === contactUserId) {
+      select(null);
+    }
+    await refreshContacts();
   }
 
   async function handleCreateChannel(name: string, kind: ChannelKind) {
@@ -437,6 +475,12 @@ export default function App() {
     const group = groups.find((g) => g.group_id === groupId);
     const firstTextChannel = group?.channels.find((c) => c.kind === "text") ?? group?.channels[0];
     select(firstTextChannel ? { kind: "group", groupId, channelId: firstTextChannel.channel_id } : null);
+    // A fellow member's new channel only reaches us in real time if we were
+    // online to catch the announcement (see `refresh_group` on the Rust
+    // side) — refetch on open too, so opening a group you've missed that
+    // for still shows it up to date instead of only catching up whenever
+    // the next announcement happens to arrive.
+    api.refreshGroup(groupId).then(upsertGroup).catch(() => {});
   }
 
   return (
@@ -468,6 +512,8 @@ export default function App() {
           setCreateChannelKind(kind);
           setOpenModal("create-channel");
         }}
+        onLeaveGroup={handleLeaveGroup}
+        onRemoveContact={handleRemoveContact}
       />
 
       {selected?.kind === "group" && activeChannel?.kind === "voice" ? (
@@ -485,6 +531,9 @@ export default function App() {
           sealStatus={sealStatus}
           messages={messagesByConversation[chatConversationId] ?? []}
           currentUserId={userId}
+          isGroup={selected?.kind === "group"}
+          contacts={contacts}
+          loadError={messagesError}
           placeholder="No messages yet. Say hello — it's sealed before it leaves this device."
           onSend={async (body, attachment) => {
             if (selected?.kind === "dm") await api.sendDirectMessage(selected.userId, body, attachment);
@@ -502,7 +551,9 @@ export default function App() {
         <EmptyChatPane />
       )}
 
-      {activeGroup && <MemberList group={activeGroup} currentUserId={userId} />}
+      {activeGroup && (
+        <MemberList group={activeGroup} currentUserId={userId} onRemoveMember={handleRemoveMember} />
+      )}
 
       {openModal === "add-contact" && (
         <Modal
@@ -554,7 +605,7 @@ export default function App() {
             setDisplayName(name);
           }}
           networkStatus={networkStatus}
-          serverUrl={serverUrl}
+          savedServerChoice={savedServerChoice}
           onClose={() => setShowSettings(false)}
           onPurge={handlePurge}
           onOpenTutorial={() => setShowTutorial(true)}

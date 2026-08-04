@@ -1,5 +1,5 @@
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use img_parts::ImageEXIF;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -196,7 +196,14 @@ pub async fn remove_account(
 
     let dir = accounts::account_dir(&paths.shared_data_dir, &account_id);
     let keychain = identity::Keychain::for_app_data_dir(&dir).map_err(|e| e.to_string())?;
-    storage::panic_purge(&dir.join("local.sqlite3"), &keychain).map_err(|e| e.to_string())?;
+    let db_path = dir.join("local.sqlite3");
+    // Off the async runtime's worker threads, same reasoning as loading the
+    // KEK (`AppService::load_or_create`) — a sync FFI call into Keychain
+    // Services shouldn't run inline on an async executor thread.
+    tauri::async_runtime::spawn_blocking(move || storage::panic_purge(&db_path, &keychain))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
 
     file.accounts.retain(|a| a.account_id != account_id);
     if is_active {
@@ -220,7 +227,11 @@ pub async fn panic_purge(
     for account in &file.accounts {
         let dir = accounts::account_dir(&paths.shared_data_dir, &account.account_id);
         let keychain = identity::Keychain::for_app_data_dir(&dir).map_err(|e| e.to_string())?;
-        storage::panic_purge(&dir.join("local.sqlite3"), &keychain).map_err(|e| e.to_string())?;
+        let db_path = dir.join("local.sqlite3");
+        tauri::async_runtime::spawn_blocking(move || storage::panic_purge(&db_path, &keychain))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
     }
     accounts::save(&paths.shared_data_dir, &accounts::AccountsFile::default())
         .map_err(|e| e.to_string())?;
@@ -230,6 +241,14 @@ pub async fn panic_purge(
 #[tauri::command]
 pub async fn add_contact(state: State<'_, AccountManager>, user_id: String) -> Result<(), String> {
     state.current().await?.add_contact(user_id).await
+}
+
+#[tauri::command]
+pub async fn remove_contact(
+    state: State<'_, AccountManager>,
+    user_id: String,
+) -> Result<(), String> {
+    state.current().await?.remove_contact(user_id).await
 }
 
 #[tauri::command]
@@ -280,6 +299,26 @@ pub async fn invite_to_group(
         .await
 }
 
+/// Owner-only (enforced server-side, same roster-update route as
+/// `invite_to_group`).
+#[tauri::command]
+pub async fn remove_member_from_group(
+    state: State<'_, AccountManager>,
+    group_id: String,
+    member_user_id: String,
+) -> Result<GroupDto, String> {
+    state
+        .current()
+        .await?
+        .remove_member_from_group(group_id, member_user_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn leave_group(state: State<'_, AccountManager>, group_id: String) -> Result<(), String> {
+    state.current().await?.leave_group(group_id).await
+}
+
 /// Owner-only (enforced server-side); returns the whole updated group so
 /// the frontend just refreshes rather than needing a separate channel-list
 /// fetch.
@@ -317,6 +356,19 @@ pub async fn list_groups(state: State<'_, AccountManager>) -> Result<Vec<GroupDt
     state.current().await?.list_groups().await
 }
 
+/// Re-fetches one group from the directory server and persists it locally
+/// — called when the frontend opens a group, so a channel created by
+/// another member while we were offline (and so never announced to us,
+/// see `p2p_core::AppService::create_channel`) still shows up as soon as we
+/// look, rather than only ever arriving via the real-time announcement.
+#[tauri::command]
+pub async fn refresh_group(
+    state: State<'_, AccountManager>,
+    group_id: String,
+) -> Result<GroupDto, String> {
+    state.current().await?.refresh_group(group_id).await
+}
+
 #[tauri::command]
 pub async fn join_voice_channel(
     state: State<'_, AccountManager>,
@@ -340,7 +392,11 @@ pub async fn set_voice_changer_enabled(
     state: State<'_, AccountManager>,
     enabled: bool,
 ) -> Result<(), String> {
-    state.current().await?.set_voice_changer_enabled(enabled).await
+    state
+        .current()
+        .await?
+        .set_voice_changer_enabled(enabled)
+        .await
 }
 
 #[tauri::command]
@@ -349,7 +405,14 @@ pub async fn set_mic_muted(state: State<'_, AccountManager>, muted: bool) -> Res
 }
 
 #[tauri::command]
-pub async fn get_voice_participants(state: State<'_, AccountManager>) -> Result<Vec<String>, String> {
+pub async fn get_mic_muted(state: State<'_, AccountManager>) -> Result<bool, String> {
+    state.current().await?.get_mic_muted().await
+}
+
+#[tauri::command]
+pub async fn get_voice_participants(
+    state: State<'_, AccountManager>,
+) -> Result<Vec<String>, String> {
     state.current().await?.get_voice_participants().await
 }
 
@@ -364,8 +427,14 @@ pub async fn set_hear_self(state: State<'_, AccountManager>, enabled: bool) -> R
 }
 
 #[tauri::command]
-pub async fn get_voice_speaking_participants(state: State<'_, AccountManager>) -> Result<Vec<String>, String> {
-    state.current().await?.get_voice_speaking_participants().await
+pub async fn get_voice_speaking_participants(
+    state: State<'_, AccountManager>,
+) -> Result<Vec<String>, String> {
+    state
+        .current()
+        .await?
+        .get_voice_speaking_participants()
+        .await
 }
 
 /// Removes EXIF metadata from image bytes losslessly (segment-level, no

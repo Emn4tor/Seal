@@ -16,6 +16,11 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT/apps/desktop"
 
+# Bakes the official Seal network in as the recommended server option on
+# the first-run screen — a build-time default, not a runtime lock-in;
+# "Custom server" and "Local test server" stay available regardless.
+export SEAL_DEFAULT_DIRECTORY_URL="https://seal.emn4tor.de"
+
 npm install
 npm run tauri build -- --bundles appimage,deb
 

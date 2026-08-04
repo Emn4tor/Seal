@@ -69,7 +69,14 @@ pub async fn create_channel(
                 ));
             }
 
-            db::create_channel(conn, &req.group_id, &req.channel_id, &req.name, req.kind, now)
+            db::create_channel(
+                conn,
+                &req.group_id,
+                &req.channel_id,
+                &req.name,
+                req.kind,
+                now,
+            )
         })
         .await
         .map(Json)

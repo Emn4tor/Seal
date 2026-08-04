@@ -6,14 +6,20 @@ fn contacts_round_trip() {
     let store = LocalStore::open(&dir.path().join("db.sqlite3"), [1u8; 32]).unwrap();
 
     store
-        .upsert_contact("user-1", "alice", "ed25519-a", "curve-a")
+        .upsert_contact("user-1", "alice", "ed25519-a", "curve-a", 1_700_000_000)
         .unwrap();
     store
-        .upsert_contact("user-2", "bob", "ed25519-b", "curve-b")
+        .upsert_contact("user-2", "bob", "ed25519-b", "curve-b", 1_700_000_000)
         .unwrap();
     // Upsert updates in place rather than duplicating.
     store
-        .upsert_contact("user-1", "alice renamed", "ed25519-a", "curve-a")
+        .upsert_contact(
+            "user-1",
+            "alice renamed",
+            "ed25519-a",
+            "curve-a",
+            1_700_000_100,
+        )
         .unwrap();
 
     let contacts = store.list_contacts().unwrap();

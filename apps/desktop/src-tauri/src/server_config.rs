@@ -70,10 +70,8 @@ mod tests {
         // only a resolved path, not a directory that exists yet. `save`
         // used to `fs::write` straight into it and fail with ENOENT the
         // first time anyone picked a server.
-        let dir = std::env::temp_dir().join(format!(
-            "seal-server-config-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("seal-server-config-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!dir.exists());
 

@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand::Rng;
 use rand::distributions::Alphanumeric;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 /// One identity that lives on this device. `account_id` is a local,

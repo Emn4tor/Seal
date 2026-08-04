@@ -132,7 +132,9 @@ export function Onboarding({ mode = "first", onSubmit, onCancel }: OnboardingPro
             )}
             <p className="mt-3 text-xs text-text-faint">
               This creates a private key that never leaves this device. There&rsquo;s no
-              password to remember and no account to recover.
+              password to remember and no account to recover. That cuts both ways: there&rsquo;s
+              no export or backup yet either, so losing this device means losing this identity
+              and everything in it for good.
             </p>
           </form>
         </div>

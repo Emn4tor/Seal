@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useModalEscape } from "../lib/useModalEscape";
 import { CipherSeal, type SealStatus } from "./CipherSeal";
 
 interface TutorialWizardProps {
@@ -50,7 +51,7 @@ function buildSteps(): Step[] {
     {
       eyebrow: "How Seal works · 1 of 6",
       title: "Keys, not passwords",
-      body: "There's no password to remember and no account to recover. When you got started, Seal generated a pair of keys on this device. One half is public — your ID, safe to hand to anyone, like a mailbox address. The other half is private, and it never leaves this device. Anything locked with your public half can only be opened with your private half.",
+      body: "There's no password to remember and no account to recover. When you got started, Seal generated a pair of keys on this device. One half is public — your ID, safe to hand to anyone, like a mailbox address. The other half is private, and it never leaves this device. Anything locked with your public half can only be opened with your private half. There's no export or backup yet, either — losing this device means losing this identity for good.",
       seal: "idle",
       render: (uid) => (
         <div className="mt-6 rounded-lg border border-border bg-ink px-4 py-3 text-center">
@@ -103,6 +104,8 @@ export function TutorialWizard({ userId, onClose }: TutorialWizardProps) {
   const [index, setIndex] = useState(0);
   const step = steps[index];
   const isLast = index === steps.length - 1;
+
+  useModalEscape(onClose);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-6">

@@ -72,6 +72,13 @@ impl Drop for TestKeychainGuard {
     }
 }
 
+// Runs unmodified on macOS despite the KEK now being Touch ID-protected
+// there: `cargo test` produces an unsigned binary, which can't be granted
+// `SecAccessControl` at all (see `identity::keychain::macos::set`'s
+// `ERR_SEC_MISSING_ENTITLEMENT` fallback) — so this exercises that
+// fallback path, not a live biometric prompt. A signed build is a
+// different story; there's no automated coverage of the actual
+// Touch-ID-gated path, since that needs a real interactive prompt.
 #[test]
 fn keychain_kek_is_stable_then_crypto_shredded_on_delete() {
     let unique = format!("p2p-chat-test-{}", uuid_like());

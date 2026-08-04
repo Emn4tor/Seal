@@ -88,6 +88,26 @@ impl ChatNode {
         Ok(())
     }
 
+    /// Broadcasts "this group's channel list changed" over the group's
+    /// existing Megolm session and gossipsub topic — same transport as a
+    /// chat message, just a different payload variant. See
+    /// `GroupPayload::ChannelsChanged` for why members who miss this need
+    /// another way to catch up.
+    pub fn send_channels_changed(&mut self, group_id: &str) -> anyhow::Result<()> {
+        let payload = GroupPayload::ChannelsChanged;
+        let envelope = self.megolm.encrypt(
+            group_id,
+            &self.identity.user_id(),
+            &bincode::serialize(&payload)?,
+        )?;
+        let bytes = bincode::serialize(&envelope)?;
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(group_topic(group_id), bytes)?;
+        Ok(())
+    }
+
     pub fn local_peer_id(&self) -> PeerId {
         *self.swarm.local_peer_id()
     }
@@ -108,6 +128,36 @@ impl ChatNode {
                 return address;
             }
         }
+    }
+
+    /// Like `wait_for_listen_addr`, but collects every address the swarm
+    /// announces within a short window after the first one arrives.
+    /// Binding `0.0.0.0` emits one `NewListenAddr` per network interface
+    /// (Wi-Fi, Ethernet, a VPN adapter, ...), in unpredictable order, so a
+    /// caller that needs every real LAN-reachable address — not just
+    /// whichever interface happened to enumerate first — should use this
+    /// instead. Always returns at least one address.
+    pub async fn wait_for_listen_addrs(&mut self, settle: std::time::Duration) -> Vec<Multiaddr> {
+        let mut addrs = Vec::new();
+        loop {
+            if let SwarmEvent::NewListenAddr { address, .. } = self.swarm.select_next_some().await {
+                addrs.push(address);
+                break;
+            }
+        }
+        let deadline = tokio::time::sleep(settle);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                event = self.swarm.select_next_some() => {
+                    if let SwarmEvent::NewListenAddr { address, .. } = event {
+                        addrs.push(address);
+                    }
+                }
+                _ = &mut deadline => break,
+            }
+        }
+        addrs
     }
 
     pub fn add_contact(
@@ -137,6 +187,14 @@ impl ChatNode {
 
     pub fn has_contact(&self, user_id: &str) -> bool {
         self.contacts.contains_key(user_id)
+    }
+
+    /// Drops the in-memory transport contact (peer id, known addresses,
+    /// Curve25519 key) — the Olm session, if any, is left alone in `olm`'s
+    /// own manager rather than torn down here, since removing a contact
+    /// doesn't need to invalidate a session that's already established.
+    pub fn remove_contact(&mut self, user_id: &str) {
+        self.contacts.remove(user_id);
     }
 
     /// Whether an Olm session with this contact already exists — callers
@@ -419,6 +477,9 @@ impl ChatNode {
                             joined,
                         })
                     }
+                    GroupPayload::ChannelsChanged => Some(ChatEvent::GroupChannelsChanged {
+                        group_id: envelope.group_id,
+                    }),
                 }
             }
             gossipsub::Event::Subscribed { peer_id, topic } => Some(ChatEvent::GossipSubscribed {

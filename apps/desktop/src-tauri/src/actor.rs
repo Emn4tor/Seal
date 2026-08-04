@@ -31,6 +31,10 @@ pub enum Command {
         user_id: String,
         respond_to: oneshot::Sender<Result<(), String>>,
     },
+    RemoveContact {
+        user_id: String,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
     ListContacts {
         respond_to: oneshot::Sender<Result<Vec<ContactDto>, String>>,
     },
@@ -53,6 +57,15 @@ pub enum Command {
         member_user_id: String,
         respond_to: oneshot::Sender<Result<GroupDto, String>>,
     },
+    RemoveMemberFromGroup {
+        group_id: String,
+        member_user_id: String,
+        respond_to: oneshot::Sender<Result<GroupDto, String>>,
+    },
+    LeaveGroup {
+        group_id: String,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
     CreateChannel {
         group_id: String,
         name: String,
@@ -69,6 +82,10 @@ pub enum Command {
     ListGroups {
         respond_to: oneshot::Sender<Result<Vec<GroupDto>, String>>,
     },
+    RefreshGroup {
+        group_id: String,
+        respond_to: oneshot::Sender<Result<GroupDto, String>>,
+    },
     JoinVoiceChannel {
         group_id: String,
         channel_id: String,
@@ -84,6 +101,15 @@ pub enum Command {
     SetMicMuted {
         muted: bool,
         respond_to: oneshot::Sender<Result<(), String>>,
+    },
+    /// Flips the current mute state rather than setting an explicit one —
+    /// only the tray menu's mic-mute item uses this, since it has no other
+    /// way to know the current state before deciding which way to flip it.
+    ToggleMicMuted {
+        respond_to: oneshot::Sender<Result<bool, String>>,
+    },
+    GetMicMuted {
+        respond_to: oneshot::Sender<Result<bool, String>>,
     },
     GetVoiceParticipants {
         respond_to: oneshot::Sender<Result<Vec<String>, String>>,
@@ -128,7 +154,10 @@ impl ActorHandle {
 
     /// `display_name` is `None` to resume an existing identity (its stored
     /// name is used and returned), `Some` only when creating a new one.
-    pub async fn initialize(&self, display_name: Option<String>) -> Result<(String, String), String> {
+    pub async fn initialize(
+        &self,
+        display_name: Option<String>,
+    ) -> Result<(String, String), String> {
         self.call(|respond_to| Command::Initialize {
             display_name,
             respond_to,
@@ -146,6 +175,14 @@ impl ActorHandle {
 
     pub async fn add_contact(&self, user_id: String) -> Result<(), String> {
         self.call(|respond_to| Command::AddContact {
+            user_id,
+            respond_to,
+        })
+        .await?
+    }
+
+    pub async fn remove_contact(&self, user_id: String) -> Result<(), String> {
+        self.call(|respond_to| Command::RemoveContact {
             user_id,
             respond_to,
         })
@@ -198,6 +235,27 @@ impl ActorHandle {
         .await?
     }
 
+    pub async fn remove_member_from_group(
+        &self,
+        group_id: String,
+        member_user_id: String,
+    ) -> Result<GroupDto, String> {
+        self.call(|respond_to| Command::RemoveMemberFromGroup {
+            group_id,
+            member_user_id,
+            respond_to,
+        })
+        .await?
+    }
+
+    pub async fn leave_group(&self, group_id: String) -> Result<(), String> {
+        self.call(|respond_to| Command::LeaveGroup {
+            group_id,
+            respond_to,
+        })
+        .await?
+    }
+
     pub async fn create_channel(
         &self,
         group_id: String,
@@ -235,7 +293,19 @@ impl ActorHandle {
             .await?
     }
 
-    pub async fn join_voice_channel(&self, group_id: String, channel_id: String) -> Result<(), String> {
+    pub async fn refresh_group(&self, group_id: String) -> Result<GroupDto, String> {
+        self.call(|respond_to| Command::RefreshGroup {
+            group_id,
+            respond_to,
+        })
+        .await?
+    }
+
+    pub async fn join_voice_channel(
+        &self,
+        group_id: String,
+        channel_id: String,
+    ) -> Result<(), String> {
         self.call(|respond_to| Command::JoinVoiceChannel {
             group_id,
             channel_id,
@@ -250,12 +320,25 @@ impl ActorHandle {
     }
 
     pub async fn set_voice_changer_enabled(&self, enabled: bool) -> Result<(), String> {
-        self.call(|respond_to| Command::SetVoiceChangerEnabled { enabled, respond_to })
-            .await?
+        self.call(|respond_to| Command::SetVoiceChangerEnabled {
+            enabled,
+            respond_to,
+        })
+        .await?
     }
 
     pub async fn set_mic_muted(&self, muted: bool) -> Result<(), String> {
         self.call(|respond_to| Command::SetMicMuted { muted, respond_to })
+            .await?
+    }
+
+    pub async fn toggle_mic_muted(&self) -> Result<bool, String> {
+        self.call(|respond_to| Command::ToggleMicMuted { respond_to })
+            .await?
+    }
+
+    pub async fn get_mic_muted(&self) -> Result<bool, String> {
+        self.call(|respond_to| Command::GetMicMuted { respond_to })
             .await?
     }
 
@@ -270,8 +353,11 @@ impl ActorHandle {
     }
 
     pub async fn set_hear_self(&self, enabled: bool) -> Result<(), String> {
-        self.call(|respond_to| Command::SetHearSelf { enabled, respond_to })
-            .await?
+        self.call(|respond_to| Command::SetHearSelf {
+            enabled,
+            respond_to,
+        })
+        .await?
     }
 
     pub async fn get_voice_speaking_participants(&self) -> Result<Vec<String>, String> {
@@ -336,7 +422,8 @@ async fn run(
                         // internally; this just tells the frontend to refetch
                         // the lists that might have just changed.
                         match &event {
-                            p2p_core::ChatEvent::GroupKeyReceived { .. } => {
+                            p2p_core::ChatEvent::GroupKeyReceived { .. }
+                            | p2p_core::ChatEvent::GroupChannelsChanged { .. } => {
                                 let _ = app.emit("groups-updated", ());
                             }
                             p2p_core::ChatEvent::DirectMessage { .. } => {
@@ -367,6 +454,9 @@ fn reject_not_initialized(cmd: Command) {
         Command::AddContact { respond_to, .. } => {
             let _ = respond_to.send(Err(err()));
         }
+        Command::RemoveContact { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
         Command::ListContacts { respond_to } => {
             let _ = respond_to.send(Err(err()));
         }
@@ -382,6 +472,12 @@ fn reject_not_initialized(cmd: Command) {
         Command::InviteToGroup { respond_to, .. } => {
             let _ = respond_to.send(Err(err()));
         }
+        Command::RemoveMemberFromGroup { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::LeaveGroup { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
         Command::CreateChannel { respond_to, .. } => {
             let _ = respond_to.send(Err(err()));
         }
@@ -389,6 +485,9 @@ fn reject_not_initialized(cmd: Command) {
             let _ = respond_to.send(Err(err()));
         }
         Command::ListGroups { respond_to } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::RefreshGroup { respond_to, .. } => {
             let _ = respond_to.send(Err(err()));
         }
         Command::JoinVoiceChannel { respond_to, .. } => {
@@ -401,6 +500,12 @@ fn reject_not_initialized(cmd: Command) {
             let _ = respond_to.send(Err(err()));
         }
         Command::SetMicMuted { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::ToggleMicMuted { respond_to } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::GetMicMuted { respond_to } => {
             let _ = respond_to.send(Err(err()));
         }
         Command::GetVoiceParticipants { respond_to } => {
@@ -418,7 +523,7 @@ fn reject_not_initialized(cmd: Command) {
     }
 }
 
-async fn handle_command(_app: &AppHandle, service: &mut AppService, cmd: Command) {
+async fn handle_command(app: &AppHandle, service: &mut AppService, cmd: Command) {
     match cmd {
         Command::Initialize { .. } => {
             unreachable!("handled by caller")
@@ -443,6 +548,13 @@ async fn handle_command(_app: &AppHandle, service: &mut AppService, cmd: Command
                 .map_err(|e| e.to_string());
             let _ = respond_to.send(result);
         }
+        Command::RemoveContact {
+            user_id,
+            respond_to,
+        } => {
+            let result = service.remove_contact(&user_id).map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
         Command::ListContacts { respond_to } => {
             let result = service
                 .list_contacts()
@@ -456,7 +568,11 @@ async fn handle_command(_app: &AppHandle, service: &mut AppService, cmd: Command
             attachment,
             respond_to,
         } => {
-            let result = match attachment.as_ref().map(AttachmentDto::to_payload).transpose() {
+            let result = match attachment
+                .as_ref()
+                .map(AttachmentDto::to_payload)
+                .transpose()
+            {
                 Ok(attachment) => service
                     .send_direct_message(&peer_user_id, &body, attachment)
                     .await
@@ -495,6 +611,28 @@ async fn handle_command(_app: &AppHandle, service: &mut AppService, cmd: Command
                 .map_err(|e| e.to_string());
             let _ = respond_to.send(result);
         }
+        Command::RemoveMemberFromGroup {
+            group_id,
+            member_user_id,
+            respond_to,
+        } => {
+            let result = service
+                .remove_member_from_group(&group_id, &member_user_id)
+                .await
+                .map(GroupDto::from)
+                .map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
+        Command::LeaveGroup {
+            group_id,
+            respond_to,
+        } => {
+            let result = service
+                .leave_group(&group_id)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
         Command::CreateChannel {
             group_id,
             name,
@@ -515,7 +653,11 @@ async fn handle_command(_app: &AppHandle, service: &mut AppService, cmd: Command
             attachment,
             respond_to,
         } => {
-            let result = match attachment.as_ref().map(AttachmentDto::to_payload).transpose() {
+            let result = match attachment
+                .as_ref()
+                .map(AttachmentDto::to_payload)
+                .transpose()
+            {
                 Ok(attachment) => service
                     .send_group_message(&group_id, &channel_id, &body, attachment)
                     .await
@@ -528,6 +670,17 @@ async fn handle_command(_app: &AppHandle, service: &mut AppService, cmd: Command
             let result = service
                 .list_groups()
                 .map(|v| v.into_iter().map(GroupDto::from).collect())
+                .map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
+        Command::RefreshGroup {
+            group_id,
+            respond_to,
+        } => {
+            let result = service
+                .refresh_group(&group_id)
+                .await
+                .map(GroupDto::from)
                 .map_err(|e| e.to_string());
             let _ = respond_to.send(result);
         }
@@ -546,13 +699,32 @@ async fn handle_command(_app: &AppHandle, service: &mut AppService, cmd: Command
             let result = service.leave_voice_channel().map_err(|e| e.to_string());
             let _ = respond_to.send(result);
         }
-        Command::SetVoiceChangerEnabled { enabled, respond_to } => {
+        Command::SetVoiceChangerEnabled {
+            enabled,
+            respond_to,
+        } => {
             service.set_voice_changer_enabled(enabled);
             let _ = respond_to.send(Ok(()));
         }
         Command::SetMicMuted { muted, respond_to } => {
             service.set_mic_muted(muted);
             let _ = respond_to.send(Ok(()));
+        }
+        Command::ToggleMicMuted { respond_to } => {
+            let new_muted = service.toggle_mic_muted();
+            // Only this command needs to push the new state back to the
+            // webview: it's the one path that changes mute state without
+            // any JS caller already knowing the result (the tray menu item
+            // — see lib.rs — calls this directly from Rust). `SetMicMuted`
+            // deliberately does *not* emit this: it's used by both the
+            // manual mute button and push-to-talk's per-keypress mute/
+            // unmute, and firing an event (and the sound it triggers) on
+            // every PTT press would be constant noise.
+            let _ = app.emit("mic-muted-changed", new_muted);
+            let _ = respond_to.send(Ok(new_muted));
+        }
+        Command::GetMicMuted { respond_to } => {
+            let _ = respond_to.send(Ok(service.is_mic_muted()));
         }
         Command::GetVoiceParticipants { respond_to } => {
             let _ = respond_to.send(Ok(service.voice_participants()));
@@ -561,7 +733,10 @@ async fn handle_command(_app: &AppHandle, service: &mut AppService, cmd: Command
             service.set_mic_threshold_db(db);
             let _ = respond_to.send(Ok(()));
         }
-        Command::SetHearSelf { enabled, respond_to } => {
+        Command::SetHearSelf {
+            enabled,
+            respond_to,
+        } => {
             service.set_hear_self(enabled);
             let _ = respond_to.send(Ok(()));
         }

@@ -61,15 +61,21 @@ async fn two_nodes_establish_a_voice_call_and_track_presence() {
     // Pure local bookkeeping — no network activity involved.
     assert!(call_a.note_presence("bob", true));
     assert_eq!(call_a.participants(), vec!["bob".to_string()]);
-    assert!(!call_a.note_presence("bob", true), "re-announcing an existing participant is a no-op");
+    assert!(
+        !call_a.note_presence("bob", true),
+        "re-announcing an existing participant is a no-op"
+    );
     assert!(call_a.note_presence("bob", false));
     assert!(call_a.participants().is_empty());
 
     // Real mesh dial + libp2p-stream negotiation between two live swarms.
-    tokio::time::timeout(Duration::from_secs(15), call_b.ensure_connected(peer_a, "alice".into()))
-        .await
-        .expect("timed out opening a voice stream")
-        .expect("failed to open a voice stream from b to a");
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        call_b.ensure_connected(peer_a, "alice".into()),
+    )
+    .await
+    .expect("timed out opening a voice stream")
+    .expect("failed to open a voice stream from b to a");
 
     // A second call is a no-op (already connected), not a duplicate stream.
     call_b

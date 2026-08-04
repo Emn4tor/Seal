@@ -176,3 +176,105 @@ async fn three_node_group_round_trip_including_key_share() {
          b_got_message={b_got_message} c_got_message={c_got_message}"
     );
 }
+
+/// A channel-creation announcement (`GroupPayload::ChannelsChanged`, sent by
+/// `ChatNode::send_channels_changed`) reaches a fellow member over the same
+/// gossipsub topic as a chat message. This is the real-time half of fixing
+/// "member B never sees a channel member A created" — the other half
+/// (`AppService::refresh_group`, which actually re-fetches the channel list
+/// from the directory server once this arrives) lives above `ChatNode` and
+/// isn't reachable from this crate's tests.
+#[tokio::test]
+async fn channels_changed_announcement_reaches_a_fellow_member() {
+    let mut owner = ChatNode::new(Identity::generate()).expect("build owner");
+    let mut member = ChatNode::new(Identity::generate()).expect("build member");
+
+    let owner_id = owner.identity.user_id();
+    let member_id = member.identity.user_id();
+    let owner_curve = owner.identity.curve25519_public_base64();
+    let member_curve = member.identity.curve25519_public_base64();
+    let owner_peer = owner.local_peer_id();
+    let member_peer = member.local_peer_id();
+
+    member.identity.account_mut().generate_one_time_keys(1);
+    let member_otk = *member
+        .identity
+        .account()
+        .one_time_keys()
+        .values()
+        .next()
+        .unwrap();
+    let member_otk_b64 = STANDARD.encode(member_otk.as_bytes());
+
+    owner.add_contact(&member_id, &member_curve, member_peer, vec![]);
+    member.add_contact(&owner_id, &owner_curve, owner_peer, vec![]);
+
+    owner
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .expect("owner listens");
+    let owner_addr = owner.wait_for_listen_addr().await;
+    member.dial(owner_addr).expect("member dials owner");
+
+    owner
+        .ensure_outbound_session(&member_id, &member_otk_b64)
+        .expect("owner establishes olm session with member");
+
+    const GROUP_ID: &str = "group-channels-changed";
+    owner.create_group(GROUP_ID);
+    member.join_group_topic(GROUP_ID);
+
+    let mut subscribed = false;
+    let mut shared_key = false;
+    let mut got_key = false;
+    let mut announced = false;
+    let mut got_announcement = false;
+
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if got_announcement {
+                break;
+            }
+            tokio::select! {
+                event = owner.next_event() => {
+                    if let ChatEvent::GossipSubscribed { peer_id, .. } = event
+                        && peer_id == member_peer
+                    {
+                        subscribed = true;
+                    }
+                }
+                event = member.next_event() => {
+                    if let ChatEvent::GroupKeyReceived { from, .. } = &event
+                        && *from == owner_id
+                    {
+                        got_key = true;
+                    }
+                    if let ChatEvent::GroupChannelsChanged { group_id } = event {
+                        assert_eq!(group_id, GROUP_ID);
+                        got_announcement = true;
+                    }
+                }
+            }
+
+            if subscribed && !shared_key {
+                shared_key = true;
+                owner
+                    .share_group_key(GROUP_ID, &member_id)
+                    .expect("owner shares key with member");
+            }
+
+            if got_key && !announced {
+                announced = true;
+                owner
+                    .send_channels_changed(GROUP_ID)
+                    .expect("owner announces a channel change");
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "timed out: subscribed={subscribed} got_key={got_key} \
+         announced={announced} got_announcement={got_announcement}"
+    );
+}

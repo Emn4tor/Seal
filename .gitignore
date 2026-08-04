@@ -11,3 +11,7 @@ dist-ssr
 *.sqlite3-wal
 *.sqlite3-shm
 .env
+
+# stray uncommitted local experiments, moved out of the real source tree
+# rather than deleted outright — see todo.md
+/.abandoned-experiments

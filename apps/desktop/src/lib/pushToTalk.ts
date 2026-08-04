@@ -65,6 +65,15 @@ export async function applyPushToTalk(enabled: boolean, shortcut: string | null)
   if (registeredShortcut) {
     await unregister(registeredShortcut).catch(() => {});
     registeredShortcut = null;
+    // Losing PTT's shortcut — disabling it, or clearing the key while it's
+    // still nominally on — used to leave the mic exactly as it was the
+    // instant you stopped holding the key: permanently muted if you
+    // weren't actively talking at that moment, with nothing left to ever
+    // unmute it again. `!desired` (not just `!enabled`) catches both cases
+    // and hands control back to a normal always-on mic either way. Only
+    // fires here, not below, since re-registering a *different* shortcut
+    // while staying enabled shouldn't touch mute state at all.
+    if (!desired) api.setMicMuted(false).catch(() => {});
   }
   if (!desired) return;
 

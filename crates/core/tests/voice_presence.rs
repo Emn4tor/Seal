@@ -92,9 +92,15 @@ async fn two_members_discover_each_other_in_a_voice_channel() {
         }
     })
     .await;
-    assert!(result.is_ok(), "timed out establishing the initial connection");
+    assert!(
+        result.is_ok(),
+        "timed out establishing the initial connection"
+    );
 
-    let group = alice.create_group("voice test").await.expect("alice creates group");
+    let group = alice
+        .create_group("voice test")
+        .await
+        .expect("alice creates group");
     alice
         .invite_to_group(&group.group_id, &bob_id)
         .await
@@ -130,7 +136,10 @@ async fn two_members_discover_each_other_in_a_voice_channel() {
         }
     })
     .await;
-    assert!(result.is_ok(), "timed out waiting for bob to accept the group invite");
+    assert!(
+        result.is_ok(),
+        "timed out waiting for bob to accept the group invite"
+    );
 
     alice
         .join_voice_channel(&group_id, &channel_id)
@@ -176,11 +185,17 @@ async fn two_members_discover_each_other_in_a_voice_channel() {
         }
     })
     .await;
-    assert!(result.is_ok(), "timed out waiting for mutual voice presence discovery");
+    assert!(
+        result.is_ok(),
+        "timed out waiting for mutual voice presence discovery"
+    );
 
     assert_eq!(alice.voice_participants(), vec![bob_id.clone()]);
     assert_eq!(bob.voice_participants(), vec![alice_id.clone()]);
 
-    alice.leave_voice_channel().expect("alice leaves the voice channel");
-    bob.leave_voice_channel().expect("bob leaves the voice channel");
+    alice
+        .leave_voice_channel()
+        .expect("alice leaves the voice channel");
+    bob.leave_voice_channel()
+        .expect("bob leaves the voice channel");
 }

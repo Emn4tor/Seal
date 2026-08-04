@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../lib/tauri";
+import { useModalEscape } from "../lib/useModalEscape";
 import type { Attachment, ExifField } from "../lib/types";
 
 interface ImageLightboxProps {
@@ -15,6 +16,8 @@ export function ImageLightbox({ attachment, onClose }: ImageLightboxProps) {
   const [exifFields, setExifFields] = useState<ExifField[] | null>(null);
   const [loadingExif, setLoadingExif] = useState(false);
   const [exifError, setExifError] = useState<string | null>(null);
+
+  useModalEscape(onClose);
 
   async function handleViewExif() {
     setShowExif(true);

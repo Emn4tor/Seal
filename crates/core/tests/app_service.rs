@@ -99,7 +99,11 @@ async fn full_app_service_flow_dm_then_group() {
     assert_eq!(bob_history.len(), 1);
     assert_eq!(bob_history[0].sender_user_id, alice_id);
     assert_eq!(
-        bob_history[0].attachment.as_ref().expect("bob stored the attachment").data,
+        bob_history[0]
+            .attachment
+            .as_ref()
+            .expect("bob stored the attachment")
+            .data,
         b"attachment bytes for the dm"
     );
 

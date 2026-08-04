@@ -1,6 +1,7 @@
 import type { FormEvent } from "react";
 import { useState } from "react";
 import type { ChannelKind } from "../lib/types";
+import { useModalEscape } from "../lib/useModalEscape";
 
 interface CreateChannelModalProps {
   /** Which kind was requested via the "+" that opened this (text or voice
@@ -15,6 +16,8 @@ export function CreateChannelModal({ initialKind, onSubmit, onClose }: CreateCha
   const [kind, setKind] = useState<ChannelKind>(initialKind);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useModalEscape(onClose);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -72,13 +75,6 @@ export function CreateChannelModal({ initialKind, onSubmit, onClose }: CreateCha
               Voice
             </button>
           </div>
-          {kind === "voice" && (
-            <p className="mt-2 text-xs text-text-faint">
-              Voice channels are coming in a future update — you can create and see them now, but
-              there's no audio yet.
-            </p>
-          )}
-
           {error && <p className="mt-2 text-xs text-danger">{error}</p>}
           <div className="mt-4 flex justify-end gap-2">
             <button

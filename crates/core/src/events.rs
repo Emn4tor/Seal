@@ -53,6 +53,14 @@ pub enum ChatEvent {
         channel_id: String,
         user_ids: Vec<String>,
     },
+    /// A fellow member created a new channel in a group we're in.
+    /// Intercepted by `AppService::next_event` (which owns the directory
+    /// lookup needed to refetch the group), same shape as `GroupKeyReceived`
+    /// — callers outside `p2p_core` see the frontend-facing effect of this
+    /// (an updated channel list) rather than this variant directly.
+    GroupChannelsChanged {
+        group_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

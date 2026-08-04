@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { EMBEDDED_SERVER_SENTINEL, api } from "../lib/tauri";
+import { useModalEscape } from "../lib/useModalEscape";
 import type { AccountSummary, NetworkStatus } from "../lib/types";
 import { CipherSeal } from "./CipherSeal";
 import {
@@ -27,7 +28,10 @@ interface SettingsPanelProps {
   displayName: string;
   onRename: (name: string) => Promise<void>;
   networkStatus: NetworkStatus;
-  serverUrl: string | null;
+  /** The raw saved choice ("embedded", or a real URL) — not a resolved,
+   * always-connectable URL. See `App.tsx`'s state comment for why this
+   * distinction matters for the edit/re-save flow below. */
+  savedServerChoice: string | null;
   onClose: () => void;
   onPurge: () => Promise<void>;
   onOpenTutorial: () => void;
@@ -60,7 +64,7 @@ export function SettingsPanel({
   displayName,
   onRename,
   networkStatus,
-  serverUrl,
+  savedServerChoice,
   onClose,
   onPurge,
   onOpenTutorial,
@@ -72,10 +76,12 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const [confirmText, setConfirmText] = useState("");
   const [purging, setPurging] = useState(false);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [editingServer, setEditingServer] = useState(false);
   const [serverInput, setServerInput] = useState("");
   const [serverSaved, setServerSaved] = useState(false);
+  const [serverSaveError, setServerSaveError] = useState<string | null>(null);
 
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
@@ -87,6 +93,7 @@ export function SettingsPanel({
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [confirmRemoveCurrent, setConfirmRemoveCurrent] = useState(false);
   const [removingCurrent, setRemovingCurrent] = useState(false);
+  const [removeCurrentError, setRemoveCurrentError] = useState<string | null>(null);
 
   const [micThresholdDb, setMicThresholdDb] = useState(getMicThresholdDb);
   const [pttEnabled, setPttEnabled] = useState(getPttEnabled);
@@ -94,6 +101,8 @@ export function SettingsPanel({
   const [recordingShortcut, setRecordingShortcut] = useState(false);
   const [autostartEnabled, setAutostartEnabled] = useState(getAutostartEnabled);
   const [notificationsEnabled, setNotificationsEnabled] = useState(getNotificationsEnabled);
+
+  useModalEscape(onClose);
 
   useEffect(() => {
     if (!recordingShortcut) return;
@@ -158,9 +167,14 @@ export function SettingsPanel({
   async function handleSaveServer() {
     const value = serverInput.trim();
     if (!value) return;
-    await api.saveServerUrlForNextLaunch(value);
-    setServerSaved(true);
-    setEditingServer(false);
+    setServerSaveError(null);
+    try {
+      await api.saveServerUrlForNextLaunch(value);
+      setServerSaved(true);
+      setEditingServer(false);
+    } catch (err) {
+      setServerSaveError(String(err));
+    }
   }
 
   async function handleSaveName() {
@@ -192,20 +206,24 @@ export function SettingsPanel({
 
   async function handleRemoveCurrent() {
     setRemovingCurrent(true);
+    setRemoveCurrentError(null);
     try {
       await onRemoveCurrentAccount();
-    } catch {
+    } catch (err) {
       setRemovingCurrent(false);
+      setRemoveCurrentError(String(err));
     }
   }
 
   async function handlePurge() {
     if (confirmText !== CONFIRM_PHRASE || purging) return;
     setPurging(true);
+    setPurgeError(null);
     try {
       await onPurge();
-    } catch {
+    } catch (err) {
       setPurging(false);
+      setPurgeError(String(err));
     }
   }
 
@@ -368,14 +386,21 @@ export function SettingsPanel({
           </p>
           <div className="mt-3 flex items-center gap-2 rounded-md border border-border bg-ink px-3 py-2">
             <code className="flex-1 truncate font-mono text-[13px] text-text">
-              {serverUrl === EMBEDDED_SERVER_SENTINEL
+              {savedServerChoice === EMBEDDED_SERVER_SENTINEL
                 ? "Local test server (runs on this device)"
-                : (serverUrl ?? "Unknown")}
+                : (savedServerChoice ?? "Unknown")}
             </code>
             {!editingServer && (
               <button
                 onClick={() => {
-                  setServerInput(serverUrl ?? "");
+                  // Never pre-fill the literal "embedded" sentinel as
+                  // editable text — it isn't a real URL to tweak. Blank
+                  // (with the placeholder showing) prompts for a real one
+                  // instead; re-saving unchanged no longer silently
+                  // clobbers "use the local server" with a dead URL.
+                  setServerInput(
+                    savedServerChoice === EMBEDDED_SERVER_SENTINEL ? "" : (savedServerChoice ?? ""),
+                  );
                   setServerSaved(false);
                   setEditingServer(true);
                 }}
@@ -409,6 +434,7 @@ export function SettingsPanel({
                   Save
                 </button>
               </div>
+              {serverSaveError && <p className="mt-2 text-xs text-danger">{serverSaveError}</p>}
             </div>
           )}
           {serverSaved && (
@@ -606,13 +632,15 @@ export function SettingsPanel({
               </button>
             )}
           </div>
+          {removeCurrentError && <p className="mt-2 text-xs text-danger">{removeCurrentError}</p>}
 
           <p className="mt-4 text-sm text-text-muted">
             <strong className="text-text">Delete everything on this device.</strong> This
             permanently destroys the keys, contacts, and message history for{" "}
             <strong className="text-text">every account</strong> on this device — instantly and
             without any way back. It has no effect on your other devices or on anyone you've
-            talked to; it only ever touches this copy of the app.
+            talked to; it only ever touches this copy of the app. There's no export or backup
+            feature yet, so there's nothing to save first if you want to keep any of this.
           </p>
           <label className="mt-4 block text-xs font-medium uppercase tracking-wider text-text-faint">
             Type <span className="font-mono text-danger">{CONFIRM_PHRASE}</span> to confirm
@@ -630,6 +658,7 @@ export function SettingsPanel({
           >
             {purging ? "Deleting…" : "Delete everything on this device"}
           </button>
+          {purgeError && <p className="mt-2 text-xs text-danger">{purgeError}</p>}
         </section>
       </div>
     </div>

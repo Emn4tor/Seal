@@ -148,6 +148,28 @@ impl AppService {
         directory_url: String,
         display_name: Option<String>,
     ) -> anyhow::Result<Self> {
+        Self::load_or_create_with(data_dir, directory_url, display_name, false).await
+    }
+
+    /// Like `load_or_create`, but with `simulate_wan` exposed: a testing-
+    /// only knob (see `scripts/run-two-mac-instances.sh`) that makes this
+    /// account withhold its LAN-reachable address from presence entirely,
+    /// so it's reachable *only* through the relay — even when a real
+    /// direct dial would actually succeed, e.g. two profiles running on
+    /// the very same machine, which would otherwise trivially connect over
+    /// loopback and never exercise the relay/dcutr path real people on two
+    /// different networks are stuck depending on. Real product code should
+    /// always go through `load_or_create` instead — this exists as a
+    /// separate method rather than a plain extra parameter on
+    /// `load_or_create` so its own several existing callers (this crate's
+    /// tests included) don't all need to thread through a flag they'd
+    /// always pass `false` for anyway.
+    pub async fn load_or_create_with(
+        data_dir: PathBuf,
+        directory_url: String,
+        display_name: Option<String>,
+        simulate_wan: bool,
+    ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&data_dir)?;
         let keychain = Keychain::for_app_data_dir(&data_dir)?;
         // Reading (or, on first run, creating) the KEK can now involve a
@@ -226,11 +248,29 @@ impl AppService {
         // the transport layer, layered in properly as a follow-up once
         // there's a relay to actually dial through.
         //
+        // Load this account's persisted libp2p transport keypair, or mint
+        // and save one on first run. Without this, `ChatNode::new` would
+        // hand out a fresh random PeerId on *every* launch — the directory
+        // server would always have the current one, but anyone who already
+        // cached this account as a contact before the restart would be
+        // silently stuck dialing a PeerId nobody answers to anymore, with
+        // nothing prompting them to re-add it. See `p2p_identity` in
+        // `storage`'s schema.sql.
+        let p2p_keypair = match store.load_p2p_keypair()? {
+            Some(bytes) => libp2p::identity::Keypair::from_protobuf_encoding(&bytes)
+                .map_err(|e| anyhow::anyhow!("stored libp2p keypair is corrupt: {e}"))?,
+            None => {
+                let keypair = libp2p::identity::Keypair::generate_ed25519();
+                store.save_p2p_keypair(&keypair.to_protobuf_encoding()?, now())?;
+                keypair
+            }
+        };
+
         // TCP only for now, not QUIC: this is the first place in the
         // workspace that would actually bind a QUIC listener (earlier
         // phases only ever listened on TCP), and it needs its own look
         // before relying on it.
-        let mut node = ChatNode::new(identity)?;
+        let mut node = ChatNode::with_keypair(identity, p2p_keypair)?;
         node.listen_on(Multiaddr::from_str("/ip4/0.0.0.0/tcp/0")?)?;
 
         // First announce at startup, immediately followed below by a
@@ -248,7 +288,15 @@ impl AppService {
         // nothing — a network-isolated sandbox/CI environment may not
         // enumerate any non-loopback interface at all, and this crate's own
         // tests dial contacts by these addresses within the same process.
-        let addrs: Vec<String> = if non_loopback.is_empty() {
+        //
+        // `simulate_wan` skips all of that and advertises nothing: not a
+        // preference for the relay, an actual absence of any directly-
+        // dialable address, matching what someone on a genuinely different
+        // network/behind a different NAT looks like to us. See
+        // `load_or_create_with`'s doc comment.
+        let addrs: Vec<String> = if simulate_wan {
+            Vec::new()
+        } else if non_loopback.is_empty() {
             listen_addrs.iter().map(|a| a.to_string()).collect()
         } else {
             non_loopback.iter().map(|a| a.to_string()).collect()
@@ -265,10 +313,21 @@ impl AppService {
         // its own. Any failure here — no relay configured, unreachable,
         // timed out — just means falling back to LAN-only reachability
         // (today's behavior), not a startup failure.
+        //
+        // This has to happen here, blocking, before the main event loop
+        // starts driving `node`'s swarm — `ChatNode` is owned single-
+        // threaded by one actor loop (see the heartbeat-closure comment
+        // below), so there's no safe way to run this concurrently in the
+        // background once that loop is running. Which makes the timeout
+        // below a real, unavoidable tax on every single app launch when the
+        // relay is misconfigured/unreachable, not just a one-off: kept
+        // short (rather than the more generous 10s a one-shot operation
+        // would otherwise deserve) specifically so a broken relay costs a
+        // few seconds once per launch, not a launch that visibly hangs.
         let relay_addrs: Vec<String> = match directory.get_relay_info().await {
             Ok(info) => match info.multiaddr.parse::<Multiaddr>() {
                 Ok(relay_addr) => match node
-                    .reserve_relay_circuit(relay_addr, std::time::Duration::from_secs(10))
+                    .reserve_relay_circuit(relay_addr, std::time::Duration::from_secs(3))
                     .await
                 {
                     Ok(circuit_addr) => vec![circuit_addr.to_string()],
@@ -333,7 +392,7 @@ impl AppService {
             node.join_group_topic(&group.group_id);
         }
 
-        Ok(Self {
+        let mut svc = Self {
             node,
             directory,
             store,
@@ -341,7 +400,9 @@ impl AppService {
             voice_call: None,
             voice_call_last_heartbeat: None,
             _presence_heartbeat: HeartbeatGuard(heartbeat_handle),
-        })
+        };
+        svc.discover_missing_groups().await;
+        Ok(svc)
     }
 
     /// Changes this account's display name: re-registers with the directory
@@ -679,6 +740,99 @@ impl AppService {
         Ok(record.into())
     }
 
+    /// Handles a fellow member asking us for a group's key (`ChatEvent::
+    /// GroupKeyRequested`, from `DirectPayload::GroupKeyRequest`). We only
+    /// have anything to give if we ourselves already have an outbound
+    /// session for that group — and critically, we independently verify
+    /// `from` is actually on the *current* roster before sharing anything:
+    /// the request itself is just an unauthenticated claim ("I should be
+    /// in this group"), Olm-authenticated as coming from `from` but not as
+    /// coming from an actual member. Best-effort throughout: this runs
+    /// reactively off the swarm event loop, nothing here should ever be
+    /// allowed to fail loudly enough to disrupt it.
+    async fn handle_group_key_requested(&mut self, group_id: &str, from: &str) {
+        if !self.node.has_outbound_group_session(group_id) {
+            return;
+        }
+        let record = match self.directory.get_group(group_id).await {
+            Ok(record) => record,
+            Err(e) => {
+                tracing::warn!(error = %e, group_id = %group_id, "failed to verify roster membership for a group-key request");
+                return;
+            }
+        };
+        if !record.members.iter().any(|m| m.user_id == from) {
+            tracing::warn!(group_id = %group_id, %from, "ignoring a group-key request from a non-member");
+            return;
+        }
+        if let Err(e) = self.ensure_connected_contact(from).await {
+            tracing::warn!(error = %e, %from, "failed to connect to a peer requesting a group key");
+            return;
+        }
+        if let Err(e) = self.ensure_direct_session(from).await {
+            tracing::warn!(error = %e, %from, "failed to establish a session with a peer requesting a group key");
+            return;
+        }
+        if let Err(e) = self.node.share_group_key(group_id, from) {
+            tracing::warn!(error = %e, group_id = %group_id, %from, "failed to answer a group-key request");
+        }
+    }
+
+    /// Finds group memberships the local store doesn't know about yet and
+    /// requests their key from the owner. Needed because membership
+    /// otherwise only ever arrives via one fire-and-forget P2P message
+    /// (the initial key-share at invite time) — if that's lost (we were
+    /// offline, a dial failed, anything), there was previously no way to
+    /// ever find out or recover: group_ids aren't discoverable any other
+    /// way, and nothing retried it. Runs once at startup
+    /// (`load_or_create_with`); best-effort throughout, since a directory-
+    /// server hiccup here shouldn't block using the app for everything
+    /// else.
+    async fn discover_missing_groups(&mut self) {
+        let my_id = self.user_id();
+        let known_group_ids = match self.directory.list_my_groups(&my_id).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to check for group memberships we might be missing");
+                return;
+            }
+        };
+        let local_group_ids: std::collections::HashSet<String> = match self.store.list_groups() {
+            Ok(groups) => groups.into_iter().map(|g| g.group_id).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read local groups");
+                return;
+            }
+        };
+
+        for group_id in known_group_ids {
+            if local_group_ids.contains(&group_id) {
+                continue;
+            }
+            if let Err(e) = self.request_missing_group_key(&group_id).await {
+                tracing::warn!(error = %e, group_id = %group_id, "failed to request the key for a group we're apparently already in");
+            }
+        }
+    }
+
+    async fn request_missing_group_key(&mut self, group_id: &str) -> anyhow::Result<()> {
+        let record = self.directory.get_group(group_id).await?;
+        // Persisted now (name/members are non-sensitive server metadata,
+        // no different from any other group lookup) even without the key
+        // yet, so it shows up in the UI right away rather than staying
+        // invisible until the round-trip below completes.
+        self.persist_group(&record)?;
+        let owner = record
+            .members
+            .iter()
+            .find(|m| m.role == wire_proto::GroupRole::Owner)
+            .ok_or_else(|| anyhow::anyhow!("group {group_id} has no owner on record"))?;
+        self.ensure_connected_contact(&owner.user_id).await?;
+        self.ensure_direct_session(&owner.user_id).await?;
+        self.node.request_group_key(group_id, &owner.user_id)?;
+        Ok(())
+    }
+
     fn persist_group(&self, record: &GroupRecord) -> anyhow::Result<()> {
         let members: Vec<(String, String)> = record
             .members
@@ -785,6 +939,12 @@ impl AppService {
                     }
                     // Irrelevant to any call we're currently in, not worth
                     // surfacing, loop around for the next real event.
+                }
+                ChatEvent::GroupKeyRequested { group_id, from } => {
+                    self.handle_group_key_requested(&group_id, &from).await;
+                    // Purely an internal protocol handshake — see the
+                    // variant's own doc comment — never surfaced to the
+                    // frontend, loop around for the next real event.
                 }
                 other => return other,
             }

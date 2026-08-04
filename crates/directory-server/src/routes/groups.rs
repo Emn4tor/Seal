@@ -38,6 +38,24 @@ pub async fn get_group(
         .map(Json)
 }
 
+/// Public, unauthenticated — same trust level as `get_group`/`get_presence`
+/// (this server already doesn't hide social-graph-adjacent metadata behind
+/// auth for reads, only for writes). Lets a client find group_ids it
+/// belongs to that it doesn't already know about locally: the only other
+/// way membership ever reaches a client is one fire-and-forget P2P message
+/// (the Megolm key share) at invite time, and if that's lost there was
+/// previously no recovery at all, since a group_id isn't discoverable any
+/// other way.
+pub async fn list_my_groups(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+) -> Result<Json<Vec<String>>, AppError> {
+    state
+        .with_conn(move |conn| db::groups_for_user(conn, &user_id))
+        .await
+        .map(Json)
+}
+
 /// Owner-only, same rule as roster changes: creating a channel is a
 /// structural change to the group, and this project doesn't have a
 /// separate "admin" tier — just Owner and Member.

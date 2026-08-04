@@ -404,6 +404,117 @@ async fn group_lifecycle_and_roster_permissions() {
     assert_eq!(group.members[0].user_id, owner_id);
 }
 
+/// Exercises `/v1/users/{id}/groups` — the endpoint a client uses to
+/// discover memberships it doesn't have locally (e.g. it missed the P2P
+/// key-share that normally delivers them). Membership should show up for
+/// everyone actually on the roster, nobody else, and drop off again once
+/// someone leaves.
+#[tokio::test]
+async fn list_my_groups_reflects_membership() {
+    let (state, _dir) = test_state().await;
+    let router = build_public_router(state);
+
+    let (owner_key, owner_id) = new_identity();
+    let (member_key, member_id) = new_identity();
+    let (outsider_key, outsider_id) = new_identity();
+    register(&router, &owner_key, &owner_id, "owner").await;
+    register(&router, &member_key, &member_id, "member").await;
+    register(&router, &outsider_key, &outsider_id, "outsider").await;
+
+    let group_id = uuid::Uuid::new_v4().to_string();
+    let mut create = CreateGroupRequest {
+        group_id: group_id.clone(),
+        name: "test group".into(),
+        creator_id: owner_id.clone(),
+        timestamp: now(),
+        nonce: nonce(),
+        signature: String::new(),
+    };
+    create.signature = b64(&owner_key.sign(&create.signing_bytes()).to_bytes());
+    let (status, _) = call(&router, "POST", "/v1/groups", Some(json!(create))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Before being added, member_id sees no groups.
+    let (status, body) = call(
+        &router,
+        "GET",
+        &format!("/v1/users/{member_id}/groups"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!([]));
+
+    let mut add = RosterUpdateRequest {
+        group_id: group_id.clone(),
+        actor_id: owner_id.clone(),
+        add: vec![member_id.clone()],
+        remove: vec![],
+        expected_version: 1,
+        timestamp: now(),
+        nonce: nonce(),
+        signature: String::new(),
+    };
+    add.signature = b64(&owner_key.sign(&add.signing_bytes()).to_bytes());
+    let (status, _) = call(
+        &router,
+        "PUT",
+        &format!("/v1/groups/{group_id}"),
+        Some(json!(add)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Owner and member both see it now; the outsider still doesn't.
+    for user_id in [&owner_id, &member_id] {
+        let (status, body) =
+            call(&router, "GET", &format!("/v1/users/{user_id}/groups"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let group_ids: Vec<String> = serde_json::from_value(body).unwrap();
+        assert_eq!(group_ids, vec![group_id.clone()]);
+    }
+    let (status, body) = call(
+        &router,
+        "GET",
+        &format!("/v1/users/{outsider_id}/groups"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!([]));
+
+    // member_id leaves; it drops back out of their list.
+    let mut leave = RosterUpdateRequest {
+        group_id: group_id.clone(),
+        actor_id: member_id.clone(),
+        add: vec![],
+        remove: vec![member_id.clone()],
+        expected_version: 2,
+        timestamp: now(),
+        nonce: nonce(),
+        signature: String::new(),
+    };
+    leave.signature = b64(&member_key.sign(&leave.signing_bytes()).to_bytes());
+    let (status, _) = call(
+        &router,
+        "PUT",
+        &format!("/v1/groups/{group_id}"),
+        Some(json!(leave)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(
+        &router,
+        "GET",
+        &format!("/v1/users/{member_id}/groups"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!([]));
+}
+
 #[tokio::test]
 async fn group_creation_seeds_a_default_channel_and_channel_creation_is_owner_only() {
     let (state, _dir) = test_state().await;

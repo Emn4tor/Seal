@@ -5,6 +5,7 @@ pub mod error;
 pub mod groups_store;
 pub mod identity_store;
 pub mod message_store;
+pub mod p2p_identity_store;
 pub mod purge;
 pub mod store;
 

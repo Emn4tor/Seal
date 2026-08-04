@@ -13,6 +13,19 @@ CREATE TABLE IF NOT EXISTS identity (
     created_at INTEGER NOT NULL
 );
 
+-- Single-row table: this account's libp2p transport keypair (separate from
+-- the vodozemac chat identity above — see net::swarm's doc comment on why
+-- they're deliberately different keys). Without this, a fresh keypair would
+-- get minted on every launch, which mints a fresh PeerId every launch too —
+-- any contact who cached the old one (i.e. everyone who added this account
+-- before its most recent restart) silently can't reach it anymore, with no
+-- automatic recovery, until they remove and re-add the contact.
+CREATE TABLE IF NOT EXISTS p2p_identity (
+    id INTEGER PRIMARY KEY CHECK (id = 0),
+    keypair_blob BLOB NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
 -- One row per active Olm ratchet session with a peer. Rewritten after every
 -- encrypt/decrypt since the ratchet state must survive process restarts.
 CREATE TABLE IF NOT EXISTS sessions_olm (

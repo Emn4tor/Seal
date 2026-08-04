@@ -388,10 +388,19 @@ async fn run(
                         display_name,
                         respond_to,
                     } => {
-                        match AppService::load_or_create(
+                        // Testing-only knob (see `scripts/run-two-mac-instances.sh`
+                        // and `AppService::load_or_create_with`'s doc comment) —
+                        // withholds this account's LAN address so it's only
+                        // reachable through the relay, for exercising that path
+                        // deliberately rather than trivially succeeding over
+                        // loopback/LAN the way two profiles on one machine
+                        // otherwise would.
+                        let simulate_wan = std::env::var("P2P_CHAT_SIMULATE_WAN").is_ok();
+                        match AppService::load_or_create_with(
                             data_dir.clone(),
                             directory_url.clone(),
                             display_name,
+                            simulate_wan,
                         )
                         .await
                         {

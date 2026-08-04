@@ -286,10 +286,15 @@ impl TryFrom<p2p_core::ChatEvent> for ChatEventDto {
             // of its own — its only effect is the `groups-updated` Tauri
             // event the actor already emits for it, which is what actually
             // gets the frontend to refetch (see `actor.rs`).
+            // `GroupKeyRequested` is a purely internal protocol handshake
+            // (see its own doc comment) — `AppService::next_event` handles
+            // it and never returns it, so this arm should be unreachable
+            // in practice, but it still has to exist for exhaustiveness.
             p2p_core::ChatEvent::Connected(_)
             | p2p_core::ChatEvent::GossipSubscribed { .. }
             | p2p_core::ChatEvent::VoicePresence { .. }
-            | p2p_core::ChatEvent::GroupChannelsChanged { .. } => Err(()),
+            | p2p_core::ChatEvent::GroupChannelsChanged { .. }
+            | p2p_core::ChatEvent::GroupKeyRequested { .. } => Err(()),
         }
     }
 }

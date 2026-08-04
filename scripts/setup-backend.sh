@@ -664,6 +664,12 @@ Environment=DIRECTORY_ADMIN_ADDR=127.0.0.1:8090
 Environment=DIRECTORY_RELAY_ADDR=0.0.0.0:$RELAY_PORT
 Environment=DIRECTORY_RELAY_KEY_PATH=$RELAY_KEY_FILE
 $RELAY_EXTERNAL_ENV_LINE
+# Without this, journalctl -u seal-directory shows only systemd's own
+# lifecycle messages, none of the app's own tracing output (relay startup,
+# presence writes, request errors) -- it stays quiet with no RUST_LOG set
+# at all. info is enough to see startup state and warnings without
+# per-request noise (that needs debug).
+Environment=RUST_LOG=info
 EnvironmentFile=$TOKEN_FILE
 ExecStart=$BIN_PATH
 Restart=on-failure

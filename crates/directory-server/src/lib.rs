@@ -36,6 +36,10 @@ pub fn build_public_router(state: AppState) -> Router {
             get(routes::groups::get_group).put(routes::groups::update_roster),
         )
         .route(
+            "/v1/users/{user_id}/groups",
+            get(routes::groups::list_my_groups),
+        )
+        .route(
             "/v1/groups/{group_id}/channels",
             post(routes::groups::create_channel),
         )

@@ -6,6 +6,7 @@ use crypto_session::{
 };
 use futures::StreamExt;
 use identity::Identity;
+use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{Multiaddr, PeerId, autonat, gossipsub, request_response};
@@ -31,8 +32,21 @@ pub struct ChatNode {
 }
 
 impl ChatNode {
+    /// Fresh random libp2p transport identity every call — fine for tests
+    /// (which don't care about surviving a restart) but *not* what the real
+    /// app should use for an existing account; see `with_keypair`.
     pub fn new(identity: Identity) -> anyhow::Result<Self> {
-        let swarm = net::build_swarm_with_new_identity()?;
+        Self::with_keypair(identity, Keypair::generate_ed25519())
+    }
+
+    /// Like `new`, but with an explicit libp2p transport keypair rather
+    /// than a freshly generated one. `AppService::load_or_create` uses
+    /// this with a keypair persisted via `storage`'s `p2p_identity` table
+    /// so this account's PeerId stays the same across restarts — without
+    /// that, every launch would mint a new PeerId, silently stranding
+    /// anyone who cached the old one as a contact before this restart.
+    pub fn with_keypair(identity: Identity, keypair: Keypair) -> anyhow::Result<Self> {
+        let swarm = net::build_swarm(keypair)?;
         Ok(Self {
             identity,
             swarm,
@@ -367,6 +381,23 @@ impl ChatNode {
         self.send_envelope(&contact, &envelope)
     }
 
+    /// Asks `owner_user_id` to (re-)send a group's key — see `DirectPayload::
+    /// GroupKeyRequest`'s doc comment. `owner_user_id` must already be a
+    /// contact (`AppService::request_missing_group_key` ensures that
+    /// before calling this).
+    pub fn request_group_key(&mut self, group_id: &str, owner_user_id: &str) -> anyhow::Result<()> {
+        let contact = self.contact(owner_user_id)?;
+        let payload = DirectPayload::GroupKeyRequest {
+            group_id: group_id.to_string(),
+        };
+        let envelope = self.olm.encrypt(
+            &self.identity,
+            &contact.curve25519_key,
+            &bincode::serialize(&payload)?,
+        )?;
+        self.send_envelope(&contact, &envelope)
+    }
+
     /// Rotates to a fresh session key and re-shares it with the given
     /// remaining members — call this on member removal so the removed
     /// member can't decrypt anything encrypted afterwards.
@@ -447,8 +478,8 @@ impl ChatNode {
         event: request_response::Event<ChatRequest, ChatResponse>,
     ) -> Option<ChatEvent> {
         match event {
-            request_response::Event::Message { message, .. } => {
-                self.handle_request_response_message(message)
+            request_response::Event::Message { peer, message, .. } => {
+                self.handle_request_response_message(peer, message)
             }
             // Previously silently dropped: a dial/send that never reached
             // the peer (unreachable address, connection refused, timeout, …)
@@ -484,29 +515,56 @@ impl ChatNode {
 
     fn handle_request_response_message(
         &mut self,
+        peer: PeerId,
         message: request_response::Message<ChatRequest, ChatResponse>,
     ) -> Option<ChatEvent> {
-        let request_response::Message::Request {
-            request, channel, ..
-        } = message
-        else {
-            return None;
-        };
+        match message {
+            request_response::Message::Request {
+                request, channel, ..
+            } => {
+                let result = self.handle_direct_request(&request);
+                let ack = result.is_ok();
+                let _ = self
+                    .swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_response(channel, ChatResponse { ack });
 
-        let result = self.handle_direct_request(&request);
-        let ack = result.is_ok();
-        let _ = self
-            .swarm
-            .behaviour_mut()
-            .request_response
-            .send_response(channel, ChatResponse { ack });
-
-        match result {
-            Ok(event) => event,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to process inbound direct message");
-                None
+                match result {
+                    Ok(event) => event,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to process inbound direct message");
+                        None
+                    }
+                }
             }
+            // Previously ignored entirely: the transport delivered the
+            // message fine, but the *recipient* couldn't decrypt it (most
+            // commonly because they restarted and lost the in-memory-only
+            // Olm session we still had cached for them — see `OlmManager`'s
+            // doc comment) and sent `ack: false` back to say so. Nothing
+            // ever looked at that ack, so this failure mode was just as
+            // silent as a transport-level one: the message vanished with
+            // no error on either side. Dropping our own cached session
+            // here means the *next* attempt claims a fresh one-time key
+            // and starts a session the recipient — who has no session
+            // state at all to conflict with — can actually accept.
+            request_response::Message::Response { response, .. } if !response.ack => {
+                let peer_user_id = self.contact_user_id_for_peer(&peer);
+                if let Some(contact) = self.contacts.values().find(|c| c.peer_id == peer) {
+                    self.olm.forget_session(&contact.curve25519_key);
+                }
+                tracing::warn!(
+                    peer = %peer,
+                    peer_user_id = ?peer_user_id,
+                    "peer rejected a direct message (failed to decrypt) — session reset for retry"
+                );
+                Some(ChatEvent::MessageSendFailed {
+                    peer_user_id,
+                    reason: "the recipient couldn't decrypt this message".to_string(),
+                })
+            }
+            request_response::Message::Response { .. } => None,
         }
     }
 
@@ -537,6 +595,10 @@ impl ChatNode {
                     from: envelope.sender_user_id,
                 }))
             }
+            DirectPayload::GroupKeyRequest { group_id } => Ok(Some(ChatEvent::GroupKeyRequested {
+                group_id,
+                from: envelope.sender_user_id,
+            })),
         }
     }
 

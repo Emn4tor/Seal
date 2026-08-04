@@ -50,6 +50,16 @@ pub enum DirectPayload {
         group_id: String,
         session_key_bytes: Vec<u8>,
     },
+    /// Sent by someone who's discovered (via the directory server's
+    /// `/v1/users/{id}/groups`) that they're apparently a member of a
+    /// group but never actually received its key — the one-shot P2P
+    /// message that normally delivers it was lost somewhere. Recovery,
+    /// not the normal invite path: `GroupKeyShare` above is still what
+    /// actually carries the key back in response, this just asks for it.
+    /// The recipient must independently verify the sender is really on
+    /// the roster before honoring this — see
+    /// `AppService::next_event`'s handling of `ChatEvent::GroupKeyRequested`.
+    GroupKeyRequest { group_id: String },
 }
 
 /// The wire envelope for a group message, published to the group's gossipsub

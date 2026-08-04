@@ -213,6 +213,20 @@ impl DirectoryClient {
             .await
     }
 
+    /// Group_ids this user belongs to, per the server's roster records —
+    /// used to notice group memberships that never arrived locally (the
+    /// P2P key-share that normally delivers them was lost) so they can be
+    /// recovered instead of staying permanently invisible. See
+    /// `AppService::discover_missing_groups`.
+    pub async fn list_my_groups(&self, user_id: &str) -> Result<Vec<String>, NetError> {
+        self.send_json::<(), _>(
+            reqwest::Method::GET,
+            &format!("/v1/users/{user_id}/groups"),
+            None,
+        )
+        .await
+    }
+
     pub async fn get_group(&self, group_id: &str) -> Result<GroupRecord, NetError> {
         self.send_json::<(), _>(
             reqwest::Method::GET,

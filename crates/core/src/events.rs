@@ -24,6 +24,16 @@ pub enum ChatEvent {
         group_id: String,
         from: String,
     },
+    /// A fellow member asked us for a group's key — see `DirectPayload::
+    /// GroupKeyRequest`'s doc comment for why this exists. Purely an
+    /// internal protocol handshake: `AppService::next_event` handles it by
+    /// re-sharing (after verifying roster membership) and never returns
+    /// it, so it has no frontend-facing shape and callers outside
+    /// `p2p_core` should never see it.
+    GroupKeyRequested {
+        group_id: String,
+        from: String,
+    },
     GossipSubscribed {
         peer_id: PeerId,
         topic: String,

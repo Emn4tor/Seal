@@ -391,6 +391,21 @@ fn list_members(conn: &Connection, group_id: &str) -> Result<Vec<GroupMember>, A
         .collect())
 }
 
+/// The group_ids a user belongs to, with no other detail — just enough
+/// for a client to notice "I'm apparently in a group I don't have
+/// locally" and go fetch/request the rest. See the doc comment on the
+/// `/v1/users/{user_id}/groups` route for why this exists: without it, a
+/// client that missed the one-shot P2P message that normally delivers
+/// membership (offline, a dropped dial, anything) had no way to ever find
+/// out, since group_ids aren't otherwise discoverable.
+pub fn groups_for_user(conn: &Connection, user_id: &str) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare("SELECT group_id FROM group_members WHERE user_id = ?1")?;
+    let rows = stmt
+        .query_map(params![user_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn member_role(
     conn: &Connection,
     group_id: &str,

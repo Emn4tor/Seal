@@ -42,6 +42,20 @@ impl OlmManager {
         self.sessions.contains_key(peer_curve25519_b64)
     }
 
+    /// Drops a cached session so the next send starts a fresh one (claiming
+    /// a new one-time key) instead of reusing one the peer has rejected.
+    /// Sessions aren't persisted across restarts (see this struct's own doc
+    /// comment) — the peer's process restarting always leaves it unable to
+    /// decrypt anything encrypted under the session we still have cached
+    /// for them, which is exactly what a `ChatResponse { ack: false }` (see
+    /// `ChatNode::handle_request_response_message`) means. Without this,
+    /// every subsequent send keeps reusing the same now-dead session,
+    /// keeps getting rejected, forever, with no way to recover short of the
+    /// user manually removing and re-adding the contact.
+    pub fn forget_session(&mut self, peer_curve25519_b64: &str) {
+        self.sessions.remove(peer_curve25519_b64);
+    }
+
     pub fn insert(&mut self, peer_curve25519_b64: &str, session: Session) {
         self.sessions
             .insert(peer_curve25519_b64.to_string(), session);

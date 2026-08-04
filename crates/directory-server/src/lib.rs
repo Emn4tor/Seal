@@ -2,6 +2,7 @@ pub mod admin;
 pub mod auth;
 pub mod db;
 pub mod error;
+pub mod relay;
 pub mod routes;
 pub mod state;
 
@@ -28,6 +29,7 @@ pub fn build_public_router(state: AppState) -> Router {
             "/v1/presence/{user_id}",
             put(routes::presence::put_presence).get(routes::presence::get_presence),
         )
+        .route("/v1/relay-info", get(routes::relay::get_relay_info))
         .route("/v1/groups", post(routes::groups::create_group))
         .route(
             "/v1/groups/{group_id}",

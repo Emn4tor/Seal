@@ -5,7 +5,7 @@ use reqwest::{Client, StatusCode};
 use wire_proto::{
     ChannelKind, ChannelRecord, ClaimedOtk, CreateChannelRequest, CreateGroupRequest, GroupRecord,
     OneTimeKeyEntry, PresenceRecord, PresenceUpdateRequest, RegisterUserRequest,
-    RosterUpdateRequest, UploadOtkRequest, UserRecord,
+    RelayInfoResponse, RosterUpdateRequest, UploadOtkRequest, UserRecord,
 };
 
 use crate::error::NetError;
@@ -146,6 +146,18 @@ impl DirectoryClient {
             None,
         )
         .await
+    }
+
+    /// The directory server's own libp2p relay identity, if it's running
+    /// one and its operator has advertised an externally-reachable address
+    /// for it (see `directory-server`'s `DIRECTORY_RELAY_EXTERNAL_MULTIADDR`).
+    /// Errors (including a 404 for "no relay configured") are all treated
+    /// the same by callers: best-effort NAT-traversal fallback, not
+    /// required for the app to function on a LAN or when a direct dial
+    /// already works.
+    pub async fn get_relay_info(&self) -> Result<RelayInfoResponse, NetError> {
+        self.send_json::<(), _>(reqwest::Method::GET, "/v1/relay-info", None)
+            .await
     }
 
     pub async fn get_user(&self, user_id: &str) -> Result<UserRecord, NetError> {

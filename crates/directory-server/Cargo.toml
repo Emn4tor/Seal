@@ -36,6 +36,21 @@ sha2 = "0.10"
 clap = { version = "4", features = ["derive", "env"] }
 ureq = "2"
 uuid = { version = "1", features = ["v4"] }
+# Server side of NAT traversal: brokers a circuit for two clients that can't
+# dial each other directly, then gets out of the way once `dcutr` upgrades
+# them to a direct connection. Deliberately minimal feature set compared to
+# `net`'s client-side `ChatBehaviour` — this process only ever relays opaque,
+# already-encrypted bytes between two peer ids, never touches chat protocols.
+libp2p = { version = "0.56", features = [
+    "tokio",
+    "tcp",
+    "noise",
+    "yamux",
+    "identify",
+    "relay",
+    "macros",
+] }
+futures = "0.3"
 
 [dev-dependencies]
 http-body-util = "0.1"

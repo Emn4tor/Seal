@@ -301,6 +301,12 @@ export default function App() {
           }
         } else if (event.type === "network_status") {
           setNetworkStatus(event.status);
+        } else if (event.type === "message_send_failed") {
+          const sender = useChatStore
+            .getState()
+            .contacts.find((c) => c.user_id === event.peer_user_id);
+          const who = sender?.display_name ?? event.peer_user_id?.slice(0, 12) ?? "a peer";
+          notifyNewMessage("Message not delivered", `Couldn't reach ${who}. It hasn't been sent.`);
         }
       }),
       onGroupsUpdated(() => void refreshGroups()),

@@ -158,6 +158,20 @@ pub fn claim_otk(
 
 // ---- presence -------------------------------------------------------------
 
+/// Deletes presence rows whose TTL has already lapsed. `get_presence`
+/// already filters these out of reads (`WHERE expires_at > now`), so this
+/// isn't needed for correctness — it's for minimizing what a seized/leaked
+/// copy of the database actually contains. Without it, an expired row (a
+/// peer_id <-> IP/relay-circuit mapping) just sits there forever once a user
+/// stops heartbeating, readable in a disk dump long after it stopped being
+/// true. Called opportunistically on every presence write, same pattern as
+/// the nonce sweep above, so it stays current without needing its own
+/// scheduled job.
+pub fn sweep_expired_presence(conn: &Connection, now: i64) -> Result<(), AppError> {
+    conn.execute("DELETE FROM presence WHERE expires_at < ?1", params![now])?;
+    Ok(())
+}
+
 pub fn upsert_presence(
     conn: &Connection,
     user_id: &str,
@@ -167,6 +181,7 @@ pub fn upsert_presence(
     expires_at: i64,
     now: i64,
 ) -> Result<(), AppError> {
+    sweep_expired_presence(conn, now)?;
     let multiaddrs_json = serde_json::to_string(multiaddrs).map_err(anyhow::Error::new)?;
     let relay_addrs_json = serde_json::to_string(relay_addrs).map_err(anyhow::Error::new)?;
     conn.execute(

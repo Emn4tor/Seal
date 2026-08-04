@@ -62,27 +62,32 @@ pub async fn push_presence(
 }
 
 /// Runs `push_presence` on a fixed interval until the returned task is
-/// dropped/aborted. `get_multiaddrs` is called fresh on every tick since the
-/// swarm's known listen/external addresses can change over time (NAT
-/// re-discovery, relay reservation changes, etc).
+/// dropped/aborted. `get_multiaddrs`/`get_relay_addrs` are called fresh on
+/// every tick since the swarm's known listen/external addresses can change
+/// over time (NAT re-discovery, relay reservation changes, etc) — in
+/// practice both closures currently just re-clone a value captured once at
+/// startup (see `AppService::load_or_create`), since nothing yet re-derives
+/// either mid-run, but the shape leaves room for that later.
 pub async fn run_presence_heartbeat_loop(
     directory_base_url: String,
     identity: std::sync::Arc<Identity>,
     peer_id: String,
     get_multiaddrs: impl Fn() -> Vec<String> + Send + 'static,
+    get_relay_addrs: impl Fn() -> Vec<String> + Send + 'static,
     interval: Duration,
 ) {
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
         let multiaddrs = get_multiaddrs();
+        let relay_addrs = get_relay_addrs();
         let ttl_secs = (interval.as_secs() * 2).max(30);
         if let Err(e) = push_presence(
             &directory_base_url,
             &identity,
             &peer_id,
             multiaddrs,
-            vec![],
+            relay_addrs,
             ttl_secs,
         )
         .await

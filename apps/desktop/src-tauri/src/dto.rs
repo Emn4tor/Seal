@@ -211,6 +211,11 @@ pub enum ChatEventDto {
     GroupKeyReceived { group_id: String, from: String },
     #[serde(rename = "network_status")]
     NetworkStatus { status: &'static str },
+    #[serde(rename = "message_send_failed")]
+    MessageSendFailed {
+        peer_user_id: Option<String>,
+        reason: String,
+    },
     #[serde(rename = "voice_participants_changed")]
     VoiceParticipantsChanged {
         group_id: String,
@@ -255,6 +260,13 @@ impl TryFrom<p2p_core::ChatEvent> for ChatEventDto {
                     p2p_core::events::NetworkStatus::Private => "private",
                     p2p_core::events::NetworkStatus::Unknown => "unknown",
                 },
+            }),
+            p2p_core::ChatEvent::MessageSendFailed {
+                peer_user_id,
+                reason,
+            } => Ok(ChatEventDto::MessageSendFailed {
+                peer_user_id,
+                reason,
             }),
             p2p_core::ChatEvent::VoiceParticipantsChanged {
                 group_id,

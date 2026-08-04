@@ -60,6 +60,7 @@ export type ChatEvent =
     }
   | { type: "group_key_received"; group_id: string; from: string }
   | { type: "network_status"; status: NetworkStatus }
+  | { type: "message_send_failed"; peer_user_id: string | null; reason: string }
   | {
       type: "voice_participants_changed";
       group_id: string;

@@ -6,6 +6,7 @@ use crypto_session::{
 };
 use futures::StreamExt;
 use identity::Identity;
+use libp2p::multiaddr::Protocol;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{Multiaddr, PeerId, autonat, gossipsub, request_response};
 use libp2p_stream::Control;
@@ -158,6 +159,57 @@ impl ChatNode {
             }
         }
         addrs
+    }
+
+    /// Requests a circuit reservation on `relay_addr` (a
+    /// `/…/p2p/<relay-peer-id>` multiaddr, as returned by the directory
+    /// server's `/v1/relay-info`) so we're reachable even when nobody can
+    /// dial us directly. `dcutr` (already in `ChatBehaviour`) then attempts
+    /// to upgrade any resulting connection to a direct one automatically —
+    /// nothing else here has to drive that part.
+    ///
+    /// Best-effort by design: callers should treat a failure/timeout as "no
+    /// relay available right now" and fall back to whatever addresses
+    /// already work (LAN reachability predates this and doesn't depend on
+    /// it). Called once at startup, before the main event loop begins
+    /// driving the swarm — same pattern as `wait_for_listen_addrs`, and for
+    /// the same reason: nothing else is polling `self.swarm` concurrently
+    /// yet, so an exclusive wait loop here is safe.
+    pub async fn reserve_relay_circuit(
+        &mut self,
+        relay_addr: Multiaddr,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<Multiaddr> {
+        let local_peer_id = self.local_peer_id();
+        let circuit_addr = relay_addr.with(Protocol::P2pCircuit);
+        self.swarm.listen_on(circuit_addr)?;
+
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                event = self.swarm.select_next_some() => {
+                    match event {
+                        SwarmEvent::NewListenAddr { address, .. }
+                            if address.iter().any(|p| matches!(p, Protocol::P2pCircuit)) =>
+                        {
+                            return Ok(address.with(Protocol::P2p(local_peer_id)));
+                        }
+                        SwarmEvent::ListenerClosed { addresses, reason: Err(e), .. }
+                            if addresses.iter().any(|a| {
+                                a.iter().any(|p| matches!(p, Protocol::P2pCircuit))
+                            }) =>
+                        {
+                            anyhow::bail!("relay circuit listener closed: {e}");
+                        }
+                        _ => {}
+                    }
+                }
+                _ = &mut deadline => {
+                    anyhow::bail!("timed out waiting for the relay to grant a circuit reservation");
+                }
+            }
+        }
     }
 
     pub fn add_contact(
@@ -394,9 +446,46 @@ impl ChatNode {
         &mut self,
         event: request_response::Event<ChatRequest, ChatResponse>,
     ) -> Option<ChatEvent> {
-        let request_response::Event::Message { message, .. } = event else {
-            return None;
-        };
+        match event {
+            request_response::Event::Message { message, .. } => {
+                self.handle_request_response_message(message)
+            }
+            // Previously silently dropped: a dial/send that never reached
+            // the peer (unreachable address, connection refused, timeout, …)
+            // produced no error and no event, so a failed direct message or
+            // group-key-share looked identical to a successful one from the
+            // sender's side. This is the other half of what actually makes
+            // that failure visible — the addresses now including a relay
+            // candidate (see `ChatNode::reserve_relay_circuit`) is what
+            // makes it less *frequent*.
+            request_response::Event::OutboundFailure { peer, error, .. } => {
+                let peer_user_id = self.contact_user_id_for_peer(&peer);
+                tracing::warn!(
+                    peer = %peer,
+                    peer_user_id = ?peer_user_id,
+                    error = %error,
+                    "direct message delivery failed"
+                );
+                Some(ChatEvent::MessageSendFailed {
+                    peer_user_id,
+                    reason: error.to_string(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn contact_user_id_for_peer(&self, peer_id: &PeerId) -> Option<String> {
+        self.contacts
+            .iter()
+            .find(|(_, c)| c.peer_id == *peer_id)
+            .map(|(user_id, _)| user_id.clone())
+    }
+
+    fn handle_request_response_message(
+        &mut self,
+        message: request_response::Message<ChatRequest, ChatResponse>,
+    ) -> Option<ChatEvent> {
         let request_response::Message::Request {
             request, channel, ..
         } = message

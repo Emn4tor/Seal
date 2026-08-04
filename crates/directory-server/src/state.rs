@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
+use wire_proto::RelayInfoResponse;
 
 use crate::db;
 use crate::error::AppError;
@@ -11,6 +12,12 @@ use crate::error::AppError;
 pub struct AppState {
     conn: Arc<Mutex<Connection>>,
     pub db_path: PathBuf,
+    /// Set once at startup from the relay's own (synchronously known)
+    /// keypair — `None` when no `DIRECTORY_RELAY_EXTERNAL_MULTIADDR` is
+    /// configured, in which case `/v1/relay-info` reports itself absent
+    /// rather than advertising an address nobody outside this host can
+    /// actually reach.
+    pub relay_info: Option<RelayInfoResponse>,
 }
 
 impl AppState {
@@ -19,7 +26,13 @@ impl AppState {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             db_path,
+            relay_info: None,
         })
+    }
+
+    pub fn with_relay_info(mut self, relay_info: Option<RelayInfoResponse>) -> Self {
+        self.relay_info = relay_info;
+        self
     }
 
     /// Runs a blocking rusqlite closure off the async runtime's worker threads.

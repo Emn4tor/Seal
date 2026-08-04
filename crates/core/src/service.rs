@@ -254,8 +254,48 @@ impl AppService {
             non_loopback.iter().map(|a| a.to_string()).collect()
         };
         let peer_id_str = node.local_peer_id().to_string();
+
+        // Best-effort NAT-traversal fallback: reserve a circuit through the
+        // directory server's relay (if it's running one and has advertised
+        // an externally-reachable address for it) so we're still reachable
+        // when nobody can dial `addrs` directly — which is the common case
+        // for two peers on different networks/behind different NATs, not
+        // just an edge case. `dcutr` (already wired into `ChatBehaviour`)
+        // then tries to upgrade any resulting connection to a direct one on
+        // its own. Any failure here — no relay configured, unreachable,
+        // timed out — just means falling back to LAN-only reachability
+        // (today's behavior), not a startup failure.
+        let relay_addrs: Vec<String> = match directory.get_relay_info().await {
+            Ok(info) => match info.multiaddr.parse::<Multiaddr>() {
+                Ok(relay_addr) => match node
+                    .reserve_relay_circuit(relay_addr, std::time::Duration::from_secs(10))
+                    .await
+                {
+                    Ok(circuit_addr) => vec![circuit_addr.to_string()],
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to reserve a relay circuit; falling back to LAN-only reachability");
+                        vec![]
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(error = %e, multiaddr = %info.multiaddr, "directory server returned an unparseable relay multiaddr");
+                    vec![]
+                }
+            },
+            Err(e) => {
+                tracing::debug!(error = %e, "no relay available from the directory server");
+                vec![]
+            }
+        };
+
         directory
-            .put_presence(&node.identity, &peer_id_str, addrs.clone(), vec![], 300)
+            .put_presence(
+                &node.identity,
+                &peer_id_str,
+                addrs.clone(),
+                relay_addrs.clone(),
+                300,
+            )
             .await?;
 
         // Recurring heartbeat, so presence survives past the one-shot
@@ -275,11 +315,13 @@ impl AppService {
         // margin before expiry rather than cutting it close.
         let heartbeat_identity = std::sync::Arc::new(Identity::from_pickle_json(&pickle_json)?);
         let heartbeat_addrs = addrs;
+        let heartbeat_relay_addrs = relay_addrs;
         let heartbeat_handle = tokio::spawn(net::presence::run_presence_heartbeat_loop(
             directory_url,
             heartbeat_identity,
             peer_id_str,
             move || heartbeat_addrs.clone(),
+            move || heartbeat_relay_addrs.clone(),
             std::time::Duration::from_secs(150),
         ));
 
@@ -361,9 +403,15 @@ impl AppService {
         let presence = self.directory.get_presence(user_id).await?;
         let peer_id = PeerId::from_str(&presence.peer_id)
             .map_err(|e| anyhow::anyhow!("contact published an invalid peer id: {e}"))?;
+        // Relay candidates alongside LAN/direct ones: `send_request_with_addresses`
+        // (in `ChatNode::send_envelope`) tries every address on a contact,
+        // so handing it a `/p2p-circuit` address too costs nothing when a
+        // direct one already works, and is what makes a contact on a
+        // different network reachable at all when it doesn't.
         let addrs: Vec<Multiaddr> = presence
             .multiaddrs
             .iter()
+            .chain(presence.relay_addrs.iter())
             .filter_map(|addr| addr.parse::<Multiaddr>().ok())
             .collect();
         // Deliberately not also calling `node.dial(...)` here: request-response
@@ -795,6 +843,7 @@ impl AppService {
         let addrs: Vec<Multiaddr> = presence
             .multiaddrs
             .iter()
+            .chain(presence.relay_addrs.iter())
             .filter_map(|addr| addr.parse::<Multiaddr>().ok())
             .collect();
         self.node.register_peer_address(peer_id, &addrs);

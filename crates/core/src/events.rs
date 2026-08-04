@@ -28,6 +28,16 @@ pub enum ChatEvent {
         peer_id: PeerId,
         topic: String,
     },
+    /// A direct message or group-key-share never reached the peer (dial
+    /// failure, timeout, connection reset, …). Previously this just
+    /// vanished silently — sending looked identical whether or not it
+    /// actually worked. `peer_user_id` is `None` when the failure came from
+    /// a peer id we don't have a contact for (shouldn't normally happen,
+    /// since we only ever send to peer ids resolved from a contact).
+    MessageSendFailed {
+        peer_user_id: Option<String>,
+        reason: String,
+    },
     /// AutoNAT's assessment of whether we're publicly reachable changed —
     /// surfaced so the UI can show something more honest than a silent
     /// spinner about why a peer might only be reachable via relay.

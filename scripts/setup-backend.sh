@@ -181,7 +181,23 @@ echo
 # ---------------------------------------------------------------------------
 
 echo "-- Building the release binary (this can take a few minutes the first time) --"
-(cd "$REPO_ROOT" && cargo build --release -p directory-server --bin directory-server)
+# On a shared box, `RUSTC_WRAPPER`/`rustc-wrapper` (env var or
+# ~/.cargo/config.toml) may point at a compiler-cache like sccache that's
+# configured for *other* projects on this machine but isn't actually
+# installed — cargo then fails outright ("could not execute process
+# `sccache ...`") instead of just building unwrapped. Try normally first
+# (the common case), and only on failure retry with the wrapper cleared for
+# this one build — env var and its cargo-config equivalent both, since
+# either could be the source — rather than touching global config that may
+# be there deliberately for something else on this host.
+if ! (cd "$REPO_ROOT" && cargo build --release -p directory-server --bin directory-server); then
+  echo "-- Build failed, possibly due to a missing compiler-cache wrapper (e.g. sccache" >&2
+  echo "   configured but not installed here) — retrying with RUSTC_WRAPPER cleared for" >&2
+  echo "   just this build, not your global cargo config --" >&2
+  (cd "$REPO_ROOT" && env -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER \
+     CARGO_BUILD_RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER= \
+     cargo build --release -p directory-server --bin directory-server)
+fi
 install -m 755 "$REPO_ROOT/target/release/directory-server" "$BIN_PATH"
 echo "Installed to $BIN_PATH"
 echo

@@ -18,7 +18,8 @@ import { VoiceCallPanel } from "./components/VoiceCallPanel";
 import { ToastStack, type ToastItem } from "./components/ToastStack";
 import { applyPushToTalk, getPttEnabled, getPttShortcut } from "./lib/pushToTalk";
 import { getAutostartEnabled, syncAutostart } from "./lib/autostart";
-import { ensureNotificationPermission, notifyNewMessage } from "./lib/notifications";
+import { ensureNotificationPermission, playNotificationSound, showNotificationPopup } from "./lib/notifications";
+import { isGroupMuted } from "./lib/mutedConversations";
 import type { AccountSummary, ChannelKind } from "./lib/types";
 
 const TOAST_LIFETIME_MS = 6000;
@@ -74,12 +75,25 @@ export default function App() {
     setToasts((ts) => ts.filter((t) => t.id !== id));
   }
 
-  // Fires the OS notification attempt (sound + native banner, when the
-  // platform actually delivers it) and always also shows an in-window
-  // toast — the one reliable path, since macOS in dev mode depends on
-  // Terminal.app's own notification permission (see `ToastStack.tsx`).
-  function notify(title: string, body: string, variant: ToastItem["variant"] = "message") {
-    notifyNewMessage(title, body);
+  // The sound always plays (a message landing while you're looking right at
+  // that conversation should still be audible) unless Do Not Disturb is on
+  // or the message's group is muted; the *popup* (native banner + in-app
+  // toast — the same "you weren't looking, here's what happened" concept,
+  // see `ToastStack.tsx`) only shows when the conversation isn't the one
+  // currently open, since showing it for something already on screen is
+  // just noise.
+  function notify(
+    title: string,
+    body: string,
+    opts: { variant?: ToastItem["variant"]; focused?: boolean; groupId?: string } = {},
+  ) {
+    const { variant = "message", focused = false, groupId } = opts;
+    if (groupId && isGroupMuted(groupId)) return;
+
+    playNotificationSound();
+    if (focused) return;
+
+    void showNotificationPopup(title, body);
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setToasts((ts) => [...ts, { id, title, body, variant }]);
     setTimeout(() => dismissToast(id), TOAST_LIFETIME_MS);
@@ -113,6 +127,8 @@ export default function App() {
     unread,
     networkStatus,
     setNetworkStatus,
+    voicePresence,
+    setChannelVoicePresence,
     reset: resetChatStore,
   } = useChatStore();
 
@@ -290,13 +306,12 @@ export default function App() {
             attachment: event.attachment,
             sent_at: Date.now() / 1000,
           });
-          if (!wasOpen) {
-            const sender = useChatStore.getState().contacts.find((c) => c.user_id === event.from);
-            notify(
-              sender?.display_name ?? event.from.slice(0, 12),
-              event.body || (event.attachment ? "Sent an attachment" : ""),
-            );
-          }
+          const sender = useChatStore.getState().contacts.find((c) => c.user_id === event.from);
+          notify(
+            sender?.display_name ?? event.from.slice(0, 12),
+            event.body || (event.attachment ? "Sent an attachment" : ""),
+            { focused: wasOpen },
+          );
         } else if (event.type === "group_message") {
           const conversationId = `${event.group_id}:${event.channel_id}`;
           const wasOpen = isConversationOpen(conversationId);
@@ -306,26 +321,31 @@ export default function App() {
             attachment: event.attachment,
             sent_at: Date.now() / 1000,
           });
-          if (!wasOpen) {
-            const state = useChatStore.getState();
-            const group = state.groups.find((g) => g.group_id === event.group_id);
-            const channel = group?.channels.find((c) => c.channel_id === event.channel_id);
-            const sender = state.contacts.find((c) => c.user_id === event.from);
-            const senderName = sender?.display_name ?? event.from.slice(0, 12);
-            const bodyText = event.body || (event.attachment ? "Sent an attachment" : "");
-            notify(
-              group ? (channel ? `${group.name} · #${channel.name}` : group.name) : "Group message",
-              `${senderName}: ${bodyText}`,
-            );
-          }
+          const state = useChatStore.getState();
+          const group = state.groups.find((g) => g.group_id === event.group_id);
+          const channel = group?.channels.find((c) => c.channel_id === event.channel_id);
+          const sender = state.contacts.find((c) => c.user_id === event.from);
+          const senderName = sender?.display_name ?? event.from.slice(0, 12);
+          const bodyText = event.body || (event.attachment ? "Sent an attachment" : "");
+          notify(
+            group ? (channel ? `${group.name} · #${channel.name}` : group.name) : "Group message",
+            `${senderName}: ${bodyText}`,
+            { focused: wasOpen, groupId: event.group_id },
+          );
         } else if (event.type === "network_status") {
           setNetworkStatus(event.status);
+        } else if (event.type === "voice_participants_changed") {
+          // Kept up to date regardless of whether we're actually in this
+          // channel's call — see `channel_voice_participants` on the Rust
+          // side — so the channel list can preview who's in it before
+          // joining, not just show a live roster once already in.
+          setChannelVoicePresence(event.channel_id, event.user_ids);
         } else if (event.type === "message_send_failed") {
           const sender = useChatStore
             .getState()
             .contacts.find((c) => c.user_id === event.peer_user_id);
           const who = sender?.display_name ?? event.peer_user_id?.slice(0, 12) ?? "a peer";
-          notify("Message not delivered", `Couldn't reach ${who}. It hasn't been sent.`, "error");
+          notify("Message not delivered", `Couldn't reach ${who}. It hasn't been sent.`, { variant: "error" });
         }
       }),
       onGroupsUpdated(() => void refreshGroups()),
@@ -347,6 +367,25 @@ export default function App() {
       .catch((err) => setMessagesError(String(err)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
+
+  // Previews who's in each of this group's voice channels before the user
+  // joins one — live updates after this come through the
+  // "voice_participants_changed" chat-event handler above; this just seeds
+  // the initial state whenever a group comes into view (opening it, or a
+  // fellow member adding a new voice channel — `groups` changing covers
+  // both without needing a separate trigger).
+  useEffect(() => {
+    if (selected?.kind !== "group") return;
+    const group = useChatStore.getState().groups.find((g) => g.group_id === selected.groupId);
+    const voiceChannelIds = group?.channels.filter((c) => c.kind === "voice").map((c) => c.channel_id) ?? [];
+    for (const channelId of voiceChannelIds) {
+      api
+        .getChannelVoiceParticipants(channelId)
+        .then((userIds) => setChannelVoicePresence(channelId, userIds))
+        .catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, groups]);
 
   function closeTutorial() {
     localStorage.setItem(TUTORIAL_SEEN_KEY, "1");
@@ -414,7 +453,8 @@ export default function App() {
 
   if (phase === "loading") {
     return (
-      <div className="flex h-screen items-center justify-center bg-ink">
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-ink">
+        <CipherSeal status="connecting" size={40} />
         <p className="text-sm text-text-faint">Waking up…</p>
       </div>
     );
@@ -468,7 +508,8 @@ export default function App() {
     // successful account load — but fall back to the picker/onboarding
     // decision rather than rendering a broken main view.
     return (
-      <div className="flex h-screen items-center justify-center bg-ink">
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-ink">
+        <CipherSeal status="connecting" size={40} />
         <p className="text-sm text-text-faint">Waking up…</p>
       </div>
     );
@@ -526,6 +567,7 @@ export default function App() {
         selected={selected}
         unread={unread}
         activeGroup={activeGroup}
+        voicePresence={voicePresence}
         currentUserId={userId}
         onSelectContact={(userId) => select({ kind: "dm", userId })}
         onSelectGroupChannel={(channelId) =>

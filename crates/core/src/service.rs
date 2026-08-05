@@ -122,6 +122,17 @@ pub struct AppService {
     display_name: String,
     voice_call: Option<VoiceCallState>,
     voice_call_last_heartbeat: Option<std::time::Instant>,
+    /// Who's currently announced as present in each voice channel, keyed by
+    /// `channel_id` (globally unique, a UUID — no need to also key by
+    /// `group_id`) — tracked for *every* channel we're subscribed to, not
+    /// just whichever one we're actively in a call in. `VoicePresence` rides
+    /// the group's regular gossipsub topic (see `node::send_voice_presence`),
+    /// which we're already subscribed to for every group we're a member of,
+    /// so this costs nothing extra on the wire — it just means no longer
+    /// discarding an announcement as irrelevant when it isn't for our own
+    /// active call. What this enables: showing who's in a voice channel
+    /// *before* joining it, instead of only finding out after.
+    voice_channel_presence: std::collections::HashMap<String, std::collections::HashSet<String>>,
     _presence_heartbeat: HeartbeatGuard,
 }
 
@@ -391,6 +402,7 @@ impl AppService {
             display_name,
             voice_call: None,
             voice_call_last_heartbeat: None,
+            voice_channel_presence: std::collections::HashMap::new(),
             _presence_heartbeat: HeartbeatGuard(heartbeat_handle),
         };
         svc.discover_missing_groups().await;
@@ -969,11 +981,16 @@ impl AppService {
         }
     }
 
-    /// Reacts to another member's voice-channel join/leave announcement:
-    /// updates the active call's participant set (if we're actually in
-    /// that channel's call) and, on a fresh join, resolves and dials them.
-    /// Returns `None` when the announcement isn't relevant to us right now
-    /// (wrong channel, no active call, or our own echoed announcement).
+    /// Reacts to another member's voice-channel join/leave announcement.
+    /// Always updates `voice_channel_presence` (the "who's in this channel
+    /// right now" bookkeeping, kept for every channel we're subscribed to —
+    /// see that field's doc comment), regardless of whether we're actually
+    /// in a call there ourselves. If we *are* in that specific channel's
+    /// call, this also updates the live call's own participant set and, on
+    /// a fresh join, resolves and dials them — the mesh-connecting side
+    /// stays scoped to an active call, since there's no reason to open a
+    /// voice stream to someone just because we're both members of a group
+    /// that happens to have a channel they joined.
     async fn handle_voice_presence(
         &mut self,
         group_id: String,
@@ -984,12 +1001,36 @@ impl AppService {
         if from == self.user_id() {
             return None;
         }
+
+        let bookkeeping_changed = {
+            let entry = self
+                .voice_channel_presence
+                .entry(channel_id.clone())
+                .or_default();
+            if joined {
+                entry.insert(from.clone())
+            } else {
+                entry.remove(&from)
+            }
+        };
+
         let relevant = self
             .voice_call
             .as_ref()
             .is_some_and(|c| c.group_id == group_id && c.channel_id == channel_id);
         if !relevant {
-            return None;
+            return bookkeeping_changed.then(|| {
+                let user_ids = self
+                    .voice_channel_presence
+                    .get(&channel_id)
+                    .map(|set| set.iter().cloned().collect())
+                    .unwrap_or_default();
+                ChatEvent::VoiceParticipantsChanged {
+                    group_id,
+                    channel_id,
+                    user_ids,
+                }
+            });
         }
 
         let changed = self.voice_call.as_ref()?.note_presence(&from, joined);
@@ -1007,6 +1048,20 @@ impl AppService {
             channel_id,
             user_ids,
         })
+    }
+
+    /// Who's currently in a voice channel, without needing to join it —
+    /// `voice_channel_presence`'s public face. Empty (not an error) for a
+    /// channel nobody's announced presence in, including one we've simply
+    /// never received an announcement for yet (e.g. right after startup,
+    /// before anyone currently in the channel has re-announced — presence
+    /// is republished periodically, see `voice::PRESENCE_HEARTBEAT`, so this
+    /// self-heals within a few seconds rather than staying stale).
+    pub fn channel_voice_participants(&self, channel_id: &str) -> Vec<String> {
+        self.voice_channel_presence
+            .get(channel_id)
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Resolves a voice-channel participant's current network address via
@@ -1054,13 +1109,21 @@ impl AppService {
         &mut self,
         group_id: &str,
         channel_id: &str,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
     ) -> anyhow::Result<()> {
         if self.voice_call.is_some() {
             self.leave_voice_channel()?;
         }
         let control = self.node.voice_control();
-        let call =
-            VoiceCallState::start(group_id.to_string(), channel_id.to_string(), control).await?;
+        let call = VoiceCallState::start(
+            group_id.to_string(),
+            channel_id.to_string(),
+            control,
+            preferred_input,
+            preferred_output,
+        )
+        .await?;
         // A failure here (e.g. gossipsub's mesh for this topic hasn't
         // finished forming yet) is transient and shouldn't block joining
         // the call itself; leaving `voice_call_last_heartbeat` unset makes

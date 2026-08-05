@@ -89,6 +89,8 @@ pub enum Command {
     JoinVoiceChannel {
         group_id: String,
         channel_id: String,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
         respond_to: oneshot::Sender<Result<(), String>>,
     },
     LeaveVoiceChannel {
@@ -112,6 +114,14 @@ pub enum Command {
         respond_to: oneshot::Sender<Result<bool, String>>,
     },
     GetVoiceParticipants {
+        respond_to: oneshot::Sender<Result<Vec<String>, String>>,
+    },
+    /// Who's currently in a voice channel, without joining it — lets the
+    /// UI show a preview before the user commits to a call. Unlike
+    /// `GetVoiceParticipants` (the *active* call's roster), this works for
+    /// any channel, including ones we're not currently in.
+    GetChannelVoiceParticipants {
+        channel_id: String,
         respond_to: oneshot::Sender<Result<Vec<String>, String>>,
     },
     SetMicThresholdDb {
@@ -305,10 +315,14 @@ impl ActorHandle {
         &self,
         group_id: String,
         channel_id: String,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
     ) -> Result<(), String> {
         self.call(|respond_to| Command::JoinVoiceChannel {
             group_id,
             channel_id,
+            preferred_input,
+            preferred_output,
             respond_to,
         })
         .await?
@@ -345,6 +359,17 @@ impl ActorHandle {
     pub async fn get_voice_participants(&self) -> Result<Vec<String>, String> {
         self.call(|respond_to| Command::GetVoiceParticipants { respond_to })
             .await?
+    }
+
+    pub async fn get_channel_voice_participants(
+        &self,
+        channel_id: String,
+    ) -> Result<Vec<String>, String> {
+        self.call(|respond_to| Command::GetChannelVoiceParticipants {
+            channel_id,
+            respond_to,
+        })
+        .await?
     }
 
     pub async fn set_mic_threshold_db(&self, db: f32) -> Result<(), String> {
@@ -518,6 +543,9 @@ fn reject_not_initialized(cmd: Command) {
             let _ = respond_to.send(Err(err()));
         }
         Command::GetVoiceParticipants { respond_to } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::GetChannelVoiceParticipants { respond_to, .. } => {
             let _ = respond_to.send(Err(err()));
         }
         Command::SetMicThresholdDb { respond_to, .. } => {
@@ -696,10 +724,12 @@ async fn handle_command(app: &AppHandle, service: &mut AppService, cmd: Command)
         Command::JoinVoiceChannel {
             group_id,
             channel_id,
+            preferred_input,
+            preferred_output,
             respond_to,
         } => {
             let result = service
-                .join_voice_channel(&group_id, &channel_id)
+                .join_voice_channel(&group_id, &channel_id, preferred_input, preferred_output)
                 .await
                 .map_err(|e| e.to_string());
             let _ = respond_to.send(result);
@@ -737,6 +767,12 @@ async fn handle_command(app: &AppHandle, service: &mut AppService, cmd: Command)
         }
         Command::GetVoiceParticipants { respond_to } => {
             let _ = respond_to.send(Ok(service.voice_participants()));
+        }
+        Command::GetChannelVoiceParticipants {
+            channel_id,
+            respond_to,
+        } => {
+            let _ = respond_to.send(Ok(service.channel_voice_participants(&channel_id)));
         }
         Command::SetMicThresholdDb { db, respond_to } => {
             service.set_mic_threshold_db(db);

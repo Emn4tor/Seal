@@ -51,10 +51,10 @@ async fn two_nodes_establish_a_voice_call_and_track_presence() {
         }
     });
 
-    let call_a = VoiceCallState::start("group-1".into(), "channel-1".into(), control_a)
+    let call_a = VoiceCallState::start("group-1".into(), "channel-1".into(), control_a, None, None)
         .await
         .expect("start call on a");
-    let call_b = VoiceCallState::start("group-1".into(), "channel-1".into(), control_b)
+    let call_b = VoiceCallState::start("group-1".into(), "channel-1".into(), control_b, None, None)
         .await
         .expect("start call on b");
 

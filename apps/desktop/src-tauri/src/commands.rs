@@ -374,17 +374,37 @@ pub async fn join_voice_channel(
     state: State<'_, AccountManager>,
     group_id: String,
     channel_id: String,
+    preferred_input: Option<String>,
+    preferred_output: Option<String>,
 ) -> Result<(), String> {
     state
         .current()
         .await?
-        .join_voice_channel(group_id, channel_id)
+        .join_voice_channel(group_id, channel_id, preferred_input, preferred_output)
         .await
 }
 
 #[tauri::command]
 pub async fn leave_voice_channel(state: State<'_, AccountManager>) -> Result<(), String> {
     state.current().await?.leave_voice_channel().await
+}
+
+/// Available microphones, for Settings' device picker — a plain hardware
+/// query, no account/backend involvement needed. Run off the async
+/// runtime's worker threads since device enumeration is a blocking OS call.
+#[tauri::command]
+pub async fn list_input_devices() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(p2p_core::list_input_devices)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Same as `list_input_devices`, for speakers/output devices.
+#[tauri::command]
+pub async fn list_output_devices() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(p2p_core::list_output_devices)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -414,6 +434,20 @@ pub async fn get_voice_participants(
     state: State<'_, AccountManager>,
 ) -> Result<Vec<String>, String> {
     state.current().await?.get_voice_participants().await
+}
+
+/// Who's in a voice channel right now, without joining it — used to show a
+/// preview in the channel list before committing to a call.
+#[tauri::command]
+pub async fn get_channel_voice_participants(
+    state: State<'_, AccountManager>,
+    channel_id: String,
+) -> Result<Vec<String>, String> {
+    state
+        .current()
+        .await?
+        .get_channel_voice_participants(channel_id)
+        .await
 }
 
 #[tauri::command]

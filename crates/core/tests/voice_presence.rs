@@ -142,10 +142,10 @@ async fn two_members_discover_each_other_in_a_voice_channel() {
     );
 
     alice
-        .join_voice_channel(&group_id, &channel_id)
+        .join_voice_channel(&group_id, &channel_id, None, None)
         .await
         .expect("alice joins the voice channel");
-    bob.join_voice_channel(&group_id, &channel_id)
+    bob.join_voice_channel(&group_id, &channel_id, None, None)
         .await
         .expect("bob joins the voice channel");
 

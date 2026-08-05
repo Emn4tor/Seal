@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, onChatEvent, onMicMutedChanged } from "../lib/tauri";
-import { getMicThresholdDb } from "../lib/voiceSettings";
+import { getMicThresholdDb, getPreferredInputDevice, getPreferredOutputDevice } from "../lib/voiceSettings";
 import { getPttEnabled, getPttShortcut } from "../lib/pushToTalk";
 import {
   playMicMutedSound,
@@ -157,7 +157,7 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
     setError(null);
     setBusy(true);
     try {
-      await api.joinVoiceChannel(groupId, channelId);
+      await api.joinVoiceChannel(groupId, channelId, getPreferredInputDevice(), getPreferredOutputDevice());
       await api.setMicThresholdDb(getMicThresholdDb());
       if (pttEnabled) await api.setMicMuted(true);
       // Asks the backend rather than assuming `pttEnabled` — it's the

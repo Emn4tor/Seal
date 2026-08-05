@@ -57,14 +57,22 @@ export const api = {
   ) => invoke<void>("send_group_message", { groupId, channelId, body, attachment }),
   listGroups: () => invoke<Group[]>("list_groups"),
   refreshGroup: (groupId: string) => invoke<Group>("refresh_group", { groupId }),
-  joinVoiceChannel: (groupId: string, channelId: string) =>
-    invoke<void>("join_voice_channel", { groupId, channelId }),
+  joinVoiceChannel: (
+    groupId: string,
+    channelId: string,
+    preferredInput: string | null,
+    preferredOutput: string | null,
+  ) => invoke<void>("join_voice_channel", { groupId, channelId, preferredInput, preferredOutput }),
   leaveVoiceChannel: () => invoke<void>("leave_voice_channel"),
+  listInputDevices: () => invoke<string[]>("list_input_devices"),
+  listOutputDevices: () => invoke<string[]>("list_output_devices"),
   setVoiceChangerEnabled: (enabled: boolean) =>
     invoke<void>("set_voice_changer_enabled", { enabled }),
   setMicMuted: (muted: boolean) => invoke<void>("set_mic_muted", { muted }),
   getMicMuted: () => invoke<boolean>("get_mic_muted"),
   getVoiceParticipants: () => invoke<string[]>("get_voice_participants"),
+  getChannelVoiceParticipants: (channelId: string) =>
+    invoke<string[]>("get_channel_voice_participants", { channelId }),
   setMicThresholdDb: (db: number) => invoke<void>("set_mic_threshold_db", { db }),
   setHearSelf: (enabled: boolean) => invoke<void>("set_hear_self", { enabled }),
   getVoiceSpeakingParticipants: () => invoke<string[]>("get_voice_speaking_participants"),

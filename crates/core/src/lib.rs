@@ -9,5 +9,5 @@ pub use crypto_session::AttachmentPayload;
 pub use events::ChatEvent;
 pub use node::ChatNode;
 pub use service::{AppService, ChannelInfo, GroupInfo, MAX_ATTACHMENT_SIZE};
-pub use voice::VoiceCallState;
+pub use voice::{VoiceCallState, list_input_devices, list_output_devices};
 pub use wire_proto::ChannelKind;

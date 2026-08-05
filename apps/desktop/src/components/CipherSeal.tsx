@@ -33,7 +33,15 @@ export function CipherSeal({ status, size = 20, className }: CipherSealProps) {
       <g className={connecting ? "seal-ring-inner is-connecting" : "seal-ring-inner"} style={{ transformOrigin: "12px 12px" }}>
         <circle cx="12" cy="12" r="6.5" stroke={innerColor} strokeWidth="1.25" strokeDasharray="1.5 2.5" opacity={dim} />
       </g>
-      <circle cx="12" cy="12" r="2.25" fill={centerColor} opacity={status === "idle" ? 0.5 : 1} />
+      <circle
+        cx="12"
+        cy="12"
+        r="2.25"
+        fill={centerColor}
+        opacity={status === "idle" ? 0.5 : 1}
+        className={connecting ? "seal-center is-connecting" : "seal-center"}
+        style={{ transformOrigin: "12px 12px" }}
+      />
     </svg>
   );
 }

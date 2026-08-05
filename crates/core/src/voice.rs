@@ -55,6 +55,19 @@ const SPEAKING_HANGOVER: std::time::Duration = std::time::Duration::from_millis(
 
 const MIXER_TICK: std::time::Duration = std::time::Duration::from_millis(20);
 const CAPTURE_POLL: std::time::Duration = std::time::Duration::from_millis(5);
+/// How often an encoded frame actually goes out on the wire, one at a time —
+/// matches `MIXER_TICK` (both are one `SAMPLES_PER_FRAME`/`SAMPLE_RATE_HZ`
+/// frame's worth of real time: 320/16000s = 20ms), kept as its own named
+/// constant since it's pacing a conceptually different thing (egress, not
+/// the receive-side mixer). See `run_send_pacer_loop`'s doc comment for why
+/// this exists at all.
+const SEND_PACING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+/// How many encoded frames `run_send_pacer_loop` will hold before it starts
+/// dropping the oldest rather than let the queue (and so the audio's
+/// end-to-end latency) grow further — 240ms (12 frames * 20ms/frame),
+/// generous enough to absorb a real scheduling hiccup without accumulating
+/// a noticeable, ever-growing delay the way an unbounded queue would.
+const MAX_QUEUED_OUTBOUND_FRAMES: usize = 12;
 /// Roughly 1 second of headroom at a typical device rate: generous
 /// without being unbounded; real backpressure is handled by dropping (with
 /// a log line) rather than growing further.
@@ -62,6 +75,7 @@ const RING_BUFFER_CAPACITY: usize = 48_000;
 
 type JitterMap = Arc<Mutex<HashMap<u64, VecDeque<[i16; SAMPLES_PER_FRAME]>>>>;
 type Writers = Arc<AsyncMutex<Vec<(u64, WriteHalf<Stream>)>>>;
+type OutboundQueue = Arc<Mutex<VecDeque<[u8; BYTES_PER_FRAME]>>>;
 type LastFrameMap = Arc<Mutex<HashMap<u64, Instant>>>;
 
 /// dBFS of a block of `[-1.0, 1.0]`-range samples, via RMS. Silence maps to
@@ -102,6 +116,50 @@ fn downmix_to_mono(frame: &[f32], channels: usize) -> f32 {
     frame.iter().take(channels).sum::<f32>() / channels as f32
 }
 
+/// Every input device name `cpal` can currently see, in host-enumeration
+/// order. Best-effort: a device without a readable name is skipped rather
+/// than failing the whole listing. Used by the frontend's device picker
+/// (Settings -> Voice & Audio) — call fresh each time the picker opens
+/// rather than caching, since devices can be plugged/unplugged between
+/// calls.
+pub fn list_input_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    host.input_devices()
+        .map(|devices| devices.map(|d| d.to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// Same as [`list_input_devices`], for playback devices.
+pub fn list_output_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    host.output_devices()
+        .map(|devices| devices.map(|d| d.to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// Resolves a user-preferred device by exact name match against the given
+/// enumeration, falling back to the host's default when `preferred` is
+/// `None` or names a device that isn't there anymore (unplugged since the
+/// preference was saved, a name typo can't happen since the frontend only
+/// ever offers names `list_input_devices`/`list_output_devices` actually
+/// returned, but a device *disappearing* between listing and joining a call
+/// is entirely normal). Silently falling back rather than erroring out
+/// matches this module's existing philosophy: a voice call should still
+/// start, just without the preferred device, rather than fail outright over
+/// an audio preference.
+fn resolve_device(
+    mut devices: impl Iterator<Item = cpal::Device>,
+    default: Option<cpal::Device>,
+    preferred: Option<&str>,
+) -> Option<cpal::Device> {
+    if let Some(name) = preferred
+        && let Some(device) = devices.find(|d| d.to_string() == name)
+    {
+        return Some(device);
+    }
+    default
+}
+
 /// Spawns the OS thread that owns the actual cpal devices/streams. Kept
 /// entirely inside one thread (host/device/stream construction and all)
 /// since `cpal::Stream` is not `Send` on every backend; the callbacks it
@@ -112,10 +170,19 @@ fn downmix_to_mono(frame: &[f32], channels: usize) -> f32 {
 /// nor plays real audio. Everything else (presence, mesh dialing, stream
 /// negotiation, encode/mix loops running on silence) still works, which
 /// matters for testing those independently of real hardware.
+///
+/// `preferred_input`/`preferred_output`, when set, are matched by exact
+/// device name (see [`resolve_device`]) — chosen once, at call start:
+/// unlike settings like the mic threshold, there's no live "switch device
+/// mid-call" support, since that means tearing down and rebuilding the
+/// actual OS audio streams, not just adjusting a value a running loop reads
+/// each tick.
 async fn spawn_audio_io_thread(
     mic_tx: rtrb::Producer<f32>,
     speaker_rx: rtrb::Consumer<f32>,
     running: Arc<AtomicBool>,
+    preferred_input: Option<String>,
+    preferred_output: Option<String>,
 ) -> (u32, u32) {
     // A `tokio::sync::oneshot`, not `std::sync::mpsc`: real cpal device
     // setup (`build_input_stream`/`.play()` etc.) can occasionally take a
@@ -131,12 +198,18 @@ async fn spawn_audio_io_thread(
         let mut speaker_rx = speaker_rx;
         let result = (|| -> anyhow::Result<(cpal::Stream, cpal::Stream, u32, u32)> {
             let host = cpal::default_host();
-            let input = host
-                .default_input_device()
-                .ok_or_else(|| anyhow::anyhow!("no default microphone available"))?;
-            let output = host
-                .default_output_device()
-                .ok_or_else(|| anyhow::anyhow!("no default speaker/output device available"))?;
+            let input = resolve_device(
+                host.input_devices().into_iter().flatten(),
+                host.default_input_device(),
+                preferred_input.as_deref(),
+            )
+            .ok_or_else(|| anyhow::anyhow!("no default microphone available"))?;
+            let output = resolve_device(
+                host.output_devices().into_iter().flatten(),
+                host.default_output_device(),
+                preferred_output.as_deref(),
+            )
+            .ok_or_else(|| anyhow::anyhow!("no default speaker/output device available"))?;
 
             let input_supported = input.default_input_config()?;
             let output_supported = output.default_output_config()?;
@@ -235,14 +308,22 @@ impl VoiceCallState {
         group_id: String,
         channel_id: String,
         control: Control,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
     ) -> anyhow::Result<Self> {
         let running = Arc::new(AtomicBool::new(true));
 
         let (mic_tx, mic_rx) = rtrb::RingBuffer::<f32>::new(RING_BUFFER_CAPACITY);
         let (speaker_tx, speaker_rx) = rtrb::RingBuffer::<f32>::new(RING_BUFFER_CAPACITY);
 
-        let (input_rate, output_rate) =
-            spawn_audio_io_thread(mic_tx, speaker_rx, running.clone()).await;
+        let (input_rate, output_rate) = spawn_audio_io_thread(
+            mic_tx,
+            speaker_rx,
+            running.clone(),
+            preferred_input,
+            preferred_output,
+        )
+        .await;
 
         let muted = Arc::new(AtomicBool::new(false));
         let changer_enabled = Arc::new(AtomicBool::new(false));
@@ -267,6 +348,8 @@ impl VoiceCallState {
             .unwrap()
             .insert(self_monitor_id, VecDeque::new());
 
+        let outbound: OutboundQueue = Arc::new(Mutex::new(VecDeque::new()));
+
         let mut tasks = Vec::new();
 
         tasks.push(tokio::spawn(run_encode_loop(
@@ -277,9 +360,15 @@ impl VoiceCallState {
             hear_self.clone(),
             mic_threshold_db.clone(),
             local_speaking.clone(),
-            writers.clone(),
+            outbound.clone(),
             jitter.clone(),
             self_monitor_id,
+            running.clone(),
+        )));
+
+        tasks.push(tokio::spawn(run_send_pacer_loop(
+            outbound.clone(),
+            writers.clone(),
             running.clone(),
         )));
 
@@ -569,10 +658,11 @@ async fn run_reader_loop(
 }
 
 /// Drains captured mic audio, resamples to the fixed internal rate,
-/// optionally pitch-shifts, gates it against the noise threshold, ADPCM-
-/// encodes, and broadcasts the result to every currently-open peer stream
-/// (and, if "hear yourself" is on, loops a copy into the mixer's self-
-/// monitor queue too).
+/// optionally pitch-shifts, gates it against the noise threshold, and
+/// ADPCM-encodes it — handing every resulting frame to `outbound` rather
+/// than writing it to peers directly (see `run_send_pacer_loop` for why
+/// that split exists), plus, if "hear yourself" is on, looping a copy into
+/// the mixer's self-monitor queue.
 #[allow(clippy::too_many_arguments)]
 async fn run_encode_loop(
     mut mic_rx: rtrb::Consumer<f32>,
@@ -582,7 +672,7 @@ async fn run_encode_loop(
     hear_self: Arc<AtomicBool>,
     mic_threshold_db: Arc<Mutex<f32>>,
     local_speaking: Arc<AtomicBool>,
-    writers: Writers,
+    outbound: OutboundQueue,
     jitter: JitterMap,
     self_monitor_id: u64,
     running: Arc<AtomicBool>,
@@ -637,16 +727,57 @@ async fn run_encode_loop(
             let frame = f32_to_i16_frame(&frame_samples);
             let encoded = encoder.encode_frame(&frame);
 
-            let mut guard = writers.lock().await;
-            let mut failed = Vec::new();
-            for (id, writer) in guard.iter_mut() {
-                if writer.write_all(&encoded).await.is_err() {
-                    failed.push(*id);
-                }
+            let mut queue = outbound.lock().unwrap();
+            queue.push_back(encoded);
+            // Same "drop the oldest, not the newest" backpressure policy as
+            // the receive-side jitter buffer: if this is backing up, the
+            // frames worth keeping are the most recent ones, not whatever's
+            // been waiting longest.
+            while queue.len() > MAX_QUEUED_OUTBOUND_FRAMES {
+                queue.pop_front();
             }
-            if !failed.is_empty() {
-                guard.retain(|(id, _)| !failed.contains(id));
+        }
+    }
+}
+
+/// The other half of `run_encode_loop`: takes whatever frames it queued and
+/// actually puts them on the wire, exactly one per tick.
+///
+/// This split exists because processing (capture -> resample -> pitch-shift
+/// -> gate -> encode) and transmission have different timing needs.
+/// Processing only needs to keep up *on average*; a `CAPTURE_POLL` cycle
+/// delayed by scheduling jitter (another task hogging the runtime, a GC-like
+/// pause, anything) just processes a bigger batch next time, which is fine
+/// for CPU work. But writing straight to the peer socket the moment each
+/// frame was ready — what this code used to do — turns that same delay into
+/// several frames' worth of audio landing on the wire back-to-back, then a
+/// gap, then another burst: audible as exactly the stutter/lag this exists
+/// to fix, since the mixer on the *receiving* end pulls at most one frame
+/// per fixed 20ms tick (see `run_mixer_loop`) and has no jitter buffer to
+/// smooth a bursty arrival pattern back out. Pacing egress here — one frame
+/// per tick, unconditionally, regardless of how processing happened to be
+/// batched — keeps what actually reaches the network evenly spaced, which
+/// is what the receiving mixer actually needs.
+async fn run_send_pacer_loop(outbound: OutboundQueue, writers: Writers, running: Arc<AtomicBool>) {
+    let mut ticker = tokio::time::interval(SEND_PACING_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    while running.load(Ordering::Relaxed) {
+        ticker.tick().await;
+
+        let Some(encoded) = outbound.lock().unwrap().pop_front() else {
+            continue; // nothing captured this tick — legitimately silent, not an underrun to react to.
+        };
+
+        let mut guard = writers.lock().await;
+        let mut failed = Vec::new();
+        for (id, writer) in guard.iter_mut() {
+            if writer.write_all(&encoded).await.is_err() {
+                failed.push(*id);
             }
+        }
+        if !failed.is_empty() {
+            guard.retain(|(id, _)| !failed.contains(id));
         }
     }
 }

@@ -10,6 +10,10 @@ interface ChatState {
   selected: Selection;
   unread: Record<string, number>;
   networkStatus: NetworkStatus;
+  /** Who's in each voice channel right now, keyed by channel_id — kept for
+   * every channel we know about (not just one we've joined), so the
+   * channel list can preview who's in a call before joining it. */
+  voicePresence: Record<string, string[]>;
 
   setUserId: (id: string | null) => void;
   setDisplayName: (name: string | null) => void;
@@ -20,6 +24,7 @@ interface ChatState {
   appendMessage: (conversationId: string, msg: Message) => void;
   select: (selection: Selection) => void;
   setNetworkStatus: (status: NetworkStatus) => void;
+  setChannelVoicePresence: (channelId: string, userIds: string[]) => void;
   /** Clears everything account-scoped — call when switching to a different account. */
   reset: () => void;
 }
@@ -33,6 +38,7 @@ const initialState = {
   selected: null,
   unread: {},
   networkStatus: "unknown" as NetworkStatus,
+  voicePresence: {},
 };
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -71,5 +77,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set((s) => ({ unread: { ...s.unread, [id]: 0 } }));
     }
   },
+  setChannelVoicePresence: (channelId, userIds) =>
+    set((s) => ({ voicePresence: { ...s.voicePresence, [channelId]: userIds } })),
   reset: () => set({ ...initialState }),
 }));

@@ -135,6 +135,29 @@ input[type="range"] {
   animation: seal-spin-ccw 2.4s linear infinite;
 }
 
+/* The center mark's own pulse — a two-beat "lub-dub" rather than a plain
+   sine breathe, so it actually reads as a heartbeat rather than generic
+   throbbing, echoing the "waking up" copy it accompanies. */
+@keyframes seal-heartbeat {
+  0%,
+  45%,
+  100% {
+    transform: scale(1);
+  }
+  15% {
+    transform: scale(1.22);
+  }
+  25% {
+    transform: scale(0.97);
+  }
+  35% {
+    transform: scale(1.12);
+  }
+}
+.seal-center.is-connecting {
+  animation: seal-heartbeat 1.6s ease-in-out infinite;
+}
+
 /* In-app toast entrance — see `ToastStack.tsx`. A reliable, always-visible
    stand-in for OS notifications, which macOS's dev-mode workaround
    (impersonating Terminal.app's identity, since an unbundled `cargo run`

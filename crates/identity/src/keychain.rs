@@ -134,6 +134,25 @@ mod macos {
     };
     use security_framework_sys::base::errSecItemNotFound;
 
+    /// Apple's SecBase.h `errSecInvalidOwnerEdit` — "Invalid attempt to
+    /// change the owner of this item." Not in this crate's curated constant
+    /// list (same situation as `ERR_SEC_MISSING_ENTITLEMENT` below). Hit
+    /// when deleting a keychain item created by a *different* code identity
+    /// than the one asking to delete it now — the common case being an
+    /// unsigned dev build (`cargo tauri dev`/`cargo build`, this repo's
+    /// default outside a signed release): every rebuild changes the
+    /// binary's hash, so the process that deletes the KEK is never
+    /// code-identity-equal to the process that created it, and macOS
+    /// refuses the delete as an unauthorized ownership change. There's no
+    /// way to force it from here short of the build being consistently
+    /// signed, so purge treats this the same as "already gone": the
+    /// encrypted database this key protects is being deleted right
+    /// alongside it (see `storage::panic_purge`), so a keychain entry that
+    /// outlives it isn't a meaningful residual risk, and purge should never
+    /// fail (leaving the database intact) just because the OS wouldn't let
+    /// this one step complete.
+    const ERR_SEC_INVALID_OWNER_EDIT: i32 = -25244;
+
     pub fn get(service: &str, account: &str) -> Result<Option<Vec<u8>>, Error> {
         match generic_password(PasswordOptions::new_generic_password(service, account)) {
             Ok(bytes) => Ok(Some(bytes)),
@@ -178,6 +197,7 @@ mod macos {
         )) {
             Ok(()) => Ok(()),
             Err(e) if e.code() == errSecItemNotFound => Ok(()),
+            Err(e) if e.code() == ERR_SEC_INVALID_OWNER_EDIT => Ok(()),
             Err(e) => Err(e),
         }
     }

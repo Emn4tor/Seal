@@ -34,6 +34,8 @@ import { checkForUpdates } from "../lib/updater";
 import { getVersion } from "@tauri-apps/api/app";
 import { getRingtoneId, saveRingtoneId } from "../lib/ringtoneSettings";
 import { RINGTONES, type RingtoneHandle, type RingtoneId, previewRingtone } from "../lib/ringtones";
+import { getUpdateAutoCheckEnabled, getUpdateAutoInstallEnabled, saveUpdateAutoCheckEnabled, saveUpdateAutoInstallEnabled } from "../lib/updaterSettings";
+import { ToastItem } from "./ToastStack";
 
 interface SettingsPanelProps {
   userId: string;
@@ -53,6 +55,7 @@ interface SettingsPanelProps {
   onAddAnotherAccount: () => void;
   onRemoveCurrentAccount: () => Promise<void>;
   setOpenModal: React.Dispatch<React.SetStateAction<OpenModal>>;
+  notify: (title: string, body: string, opts: { variant?: ToastItem["variant"]; focused?: boolean; groupId?: string }) => void;
 }
 
 const CONFIRM_PHRASE = "DELETE EVERYTHING";
@@ -190,7 +193,8 @@ export function SettingsPanel({
   onRemoveOtherAccount,
   onAddAnotherAccount,
   onRemoveCurrentAccount,
-  setOpenModal
+  setOpenModal,
+  notify
 }: SettingsPanelProps) {
   const [tab, setTab] = useState<Tab>("account");
 
@@ -234,6 +238,9 @@ export function SettingsPanel({
   const [preferredOutput, setPreferredOutput] = useState(getPreferredOutputDevice);
   const [devicesError, setDevicesError] = useState<string | null>(null);
 
+  const [autoCheckUpdates, setAutoCheckUpdates] = useState(getUpdateAutoCheckEnabled);
+  const [autoInstallUpdates, setAutoInstallUpdates] = useState(getUpdateAutoInstallEnabled);
+
   const [appVersion, setAppVersion] = useState<string>("unknown");
 
   useModalEscape(onClose);
@@ -244,7 +251,7 @@ export function SettingsPanel({
         const version = await getVersion();
         setAppVersion(version);
       } catch (error) {
-        console.error("Error while getting app version:", error);
+        notify("Version Checking Failed", "Error while getting app version.", {variant:"error"});
       }
     }
 
@@ -295,6 +302,23 @@ export function SettingsPanel({
     setAutostartEnabled(next);
     saveAutostartEnabled(next);
     syncAutostart(next);
+  }
+
+  function handleToggleUpdateAutoCheck() {
+    const next = !autoCheckUpdates;
+    setAutoCheckUpdates(next);
+    saveUpdateAutoCheckEnabled(next);
+    if (!next) {
+      setAutoInstallUpdates(false);
+      saveUpdateAutoInstallEnabled(false);
+    }
+  }
+  function handleToggleUpdateAutoInstall() {
+    const next = !autoInstallUpdates;
+    if (autoCheckUpdates) {
+      setAutoInstallUpdates(next);
+      saveUpdateAutoInstallEnabled(next);
+    }
   }
 
   function handleToggleNotifications() {
@@ -437,7 +461,7 @@ export function SettingsPanel({
         setOpenModal("up-to-date");
       }
     } catch (e) {
-      console.error("Error while checking for updates:", e)
+      notify("Update Checking Failed", "Update endpoint did not respond with a successful status code.", {variant:"error"})
     }
   }
 
@@ -906,6 +930,27 @@ export function SettingsPanel({
                   </div>
                 </Section>
 
+                <Section title="Updates">
+                  <div className="mt-4 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-text">Check For Updates on Startup</p>
+                      <p className="mt-1 text-xs text-text-muted">
+                        Automatically check for updates on startup.
+                      </p>
+                    </div>
+                    <Toggle on={autoCheckUpdates} onClick={handleToggleUpdateAutoCheck} />
+                  </div>
+                  <div className={"mt-4 flex items-center justify-between gap-3" + (autoCheckUpdates ? "" : " opacity-40") }>
+                    <div>
+                      <p className="text-sm font-medium text-text">Update on Startup</p>
+                      <p className="mt-1 text-xs text-text-muted">
+                        Automatically download and install updates on startup.
+                      </p>
+                    </div>
+                    <Toggle on={autoInstallUpdates} onClick={handleToggleUpdateAutoInstall} />
+                  </div>
+                </Section>
+
                 <Section title="Network">
                   <div className="mt-3 flex items-center gap-2">
                     <span
@@ -1007,3 +1052,4 @@ export function SettingsPanel({
     </div>
   );
 }
+

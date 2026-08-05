@@ -79,6 +79,19 @@ impl Drop for TestKeychainGuard {
 // fallback path, not a live biometric prompt. A signed build is a
 // different story; there's no automated coverage of the actual
 // Touch-ID-gated path, since that needs a real interactive prompt.
+//
+// Ignored on Linux: `Keychain::new` there goes through the cross-platform
+// `keyring` crate, which needs a real D-Bus Secret Service (gnome-keyring,
+// kwallet, ...) to talk to — present on a real desktop session, but not on
+// a headless CI runner, where this fails immediately with
+// `Keychain(NoDefaultStore)` before ever touching the logic this test
+// actually cares about. Same category as this project's real-hardware
+// audio tests: a genuine environment gap, disclosed rather than papered
+// over with a fragile in-CI keyring-daemon setup.
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs a real D-Bus Secret Service (gnome-keyring/kwallet), not present on headless CI"
+)]
 #[test]
 fn keychain_kek_is_stable_then_crypto_shredded_on_delete() {
     let unique = format!("p2p-chat-test-{}", uuid_like());

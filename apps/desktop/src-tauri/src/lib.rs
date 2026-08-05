@@ -224,14 +224,18 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(|_app_handle, _event| {
             // macOS-specific: clicking the Dock icon while every window is
             // hidden (closed to tray) doesn't automatically reopen one —
             // this is the event that fires instead, so honor it the same
-            // way as the tray menu's "Open Seal".
+            // way as the tray menu's "Open Seal". Both closure params are
+            // prefixed `_` since they're otherwise completely unused on
+            // every other platform, once this `#[cfg]` block compiles out —
+            // `-D warnings` in CI turns that into a hard error, not just a
+            // local warning.
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = event {
-                show_main_window(app_handle);
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                show_main_window(_app_handle);
             }
         });
 }

@@ -21,11 +21,12 @@ import { getAutostartEnabled, syncAutostart } from "./lib/autostart";
 import { ensureNotificationPermission, playNotificationSound, showNotificationPopup } from "./lib/notifications";
 import { isGroupMuted } from "./lib/mutedConversations";
 import type { AccountSummary, ChannelKind } from "./lib/types";
+import { checkForUpdates, update } from "./lib/updater";
 
 const TOAST_LIFETIME_MS = 6000;
 
-type OpenModal = "add-contact" | "create-group" | "invite" | "create-channel" | null;
-type Phase = "loading" | "boot-error" | "choose-server" | "onboarding" | "picker" | "ready";
+export type OpenModal = "add-contact" | "create-group" | "invite" | "create-channel" | "update-available" | "up-to-date" | null;
+export type Phase = "loading" | "boot-error" | "choose-server" | "onboarding" | "picker" | "ready";
 const TUTORIAL_SEEN_KEY = "seal-tutorial-seen";
 
 /** Whether `conversationId` is the one currently open on screen — the same
@@ -138,6 +139,21 @@ export default function App() {
   async function refreshGroups() {
     setGroups(await api.listGroups());
   }
+
+  async function checkUpdates() {
+    try {
+      let updateAvailable = await checkForUpdates();
+      if (updateAvailable) {
+        setOpenModal("update-available");
+      }
+    } catch (e) {
+      console.error("Error while checking for updates:", e);
+    }
+  }
+
+  useEffect(() => {
+    checkUpdates()
+  }, [])
 
   async function finishBootWithAccount(account: AccountSummary, isNewAccount: boolean) {
     setActiveAccountId(account.account_id);
@@ -663,6 +679,24 @@ export default function App() {
           onClose={() => setOpenModal(null)}
         />
       )}
+      {openModal === "update-available" && (
+        <Modal
+          title="Update Available"
+          description="A new update is available. You can update now, leter or never - It's up to you."
+          submitLabel="Update"
+          onSubmit={(_)=> update()}
+          onClose={() => setOpenModal(null)}
+        />
+      )}
+      {openModal === "up-to-date" && (
+        <Modal
+          title="Up To Date"
+          description="There is no new update available, nothing to worry about."
+          submitLabel="Ok"
+          onSubmit={(_)=> new Promise<void>(()=>{setOpenModal(null)})}
+          onClose={() => setOpenModal(null)}
+        />
+      )}
       {showSettings && (
         <SettingsPanel
           userId={userId}
@@ -681,6 +715,7 @@ export default function App() {
           onRemoveOtherAccount={handleRemoveOtherAccount}
           onAddAnotherAccount={() => startAddAccount("ready")}
           onRemoveCurrentAccount={handleRemoveCurrentAccount}
+          setOpenModal={setOpenModal}
         />
       )}
       {showTutorial && <TutorialWizard userId={userId} onClose={closeTutorial} />}

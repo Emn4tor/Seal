@@ -29,6 +29,9 @@ import {
 import { getDndEnabled, saveDndEnabled } from "../lib/dndSettings";
 import { getNotificationSoundId, saveNotificationSoundId } from "../lib/notificationSoundSettings";
 import { NOTIFICATION_SOUNDS, type NotificationSoundId, playMessageSound } from "../lib/notificationSound";
+import { OpenModal } from "../App";
+import { checkForUpdates } from "../lib/updater";
+import { getVersion } from "@tauri-apps/api/app";
 
 interface SettingsPanelProps {
   userId: string;
@@ -47,6 +50,7 @@ interface SettingsPanelProps {
   onRemoveOtherAccount: (accountId: string) => Promise<void>;
   onAddAnotherAccount: () => void;
   onRemoveCurrentAccount: () => Promise<void>;
+  setOpenModal: React.Dispatch<React.SetStateAction<OpenModal>>;
 }
 
 const CONFIRM_PHRASE = "DELETE EVERYTHING";
@@ -132,6 +136,17 @@ function ShieldIcon({ className }: { className?: string }) {
   );
 }
 
+function UpdateIcon({ className }: { className?: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className={className}>
+      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+      <path d="M3 21v-5h5" />
+      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+      <path d="M21 3v5h-5" />
+    </svg>
+  );
+}
+
 function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   return (
     <button
@@ -173,6 +188,7 @@ export function SettingsPanel({
   onRemoveOtherAccount,
   onAddAnotherAccount,
   onRemoveCurrentAccount,
+  setOpenModal
 }: SettingsPanelProps) {
   const [tab, setTab] = useState<Tab>("account");
 
@@ -214,7 +230,22 @@ export function SettingsPanel({
   const [preferredOutput, setPreferredOutput] = useState(getPreferredOutputDevice);
   const [devicesError, setDevicesError] = useState<string | null>(null);
 
+  const [appVersion, setAppVersion] = useState<string>("unknown");
+
   useModalEscape(onClose);
+
+  useEffect(() => {
+    async function fetchVersion() {
+      try {
+        const version = await getVersion();
+        setAppVersion(version);
+      } catch (error) {
+        console.error("Error while getting app version:", error);
+      }
+    }
+
+    fetchVersion();
+  }, []);
 
   useEffect(() => {
     if (tab !== "voice") return;
@@ -382,6 +413,19 @@ export function SettingsPanel({
     }
   }
 
+  async function checkUpdates() {
+    try {
+      let updateAvailable = await checkForUpdates();
+      if (updateAvailable) {
+        setOpenModal("update-available");
+      } else {
+        setOpenModal("up-to-date");
+      }
+    } catch (e) {
+      console.error("Error while checking for updates:", e)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex bg-ink">
       <div className="flex w-full">
@@ -393,7 +437,7 @@ export function SettingsPanel({
                 key={id}
                 onClick={() => setTab(id)}
                 aria-current={tab === id}
-                className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium transition ${
+                className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium transition-all ${
                   tab === id ? "bg-brass-wash text-brass" : "text-text-muted hover:bg-surface-raised hover:text-text"
                 }`}
               >
@@ -401,7 +445,16 @@ export function SettingsPanel({
                 {label}
               </button>
             ))}
+            <button
+              className="flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium transition-all text-text-muted hover:bg-green-600/10 hover:text-text active:scale-98"
+              onClick={() => checkUpdates()}
+            >
+              <UpdateIcon className="shrink-0" />
+              Check for Updates
+            </button>
           </nav>
+          <p className="flex-1"></p>
+          <p className="text-xs px-2 text-text-muted">version: {appVersion}</p>
         </div>
 
         <div className="flex-1 overflow-y-auto">

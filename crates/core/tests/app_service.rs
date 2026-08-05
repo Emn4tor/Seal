@@ -42,8 +42,21 @@ async fn spawn_directory_server() -> String {
 /// backend under concurrent access, not a logic bug here. Serializing
 /// these tests relative to each other (not to the rest of the suite)
 /// removes that race entirely.
+///
+/// Also ignored on Linux, along with every other test here: `Keychain`
+/// there needs a real D-Bus Secret Service, which a headless CI runner
+/// doesn't have. A `gnome-keyring-daemon` was tried in CI to provide one
+/// but proved unreliable in practice — several different keyring errors
+/// across several tuning attempts, including tests that had just passed
+/// moments earlier failing the next run. Same disclosed-gap treatment as
+/// this project's real-audio-hardware tests rather than a fragile CI
+/// workaround; real coverage of this code still runs on macOS/Windows.
 #[tokio::test]
 #[serial]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs a real D-Bus Secret Service, not reliably available on headless CI — see this comment"
+)]
 async fn full_app_service_flow_dm_then_group() {
     let directory_url = spawn_directory_server().await;
 
@@ -210,9 +223,14 @@ async fn full_app_service_flow_dm_then_group() {
 /// whatever `display_name` the caller passed in, silently renaming the
 /// account on every restart. The stored name must win instead.
 ///
-/// `#[serial]`: see `full_app_service_flow_dm_then_group`'s doc comment.
+/// `#[serial]`/`#[cfg_attr(... ignore)]`: see
+/// `full_app_service_flow_dm_then_group`'s doc comment.
 #[tokio::test]
 #[serial]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs a real D-Bus Secret Service, not reliably available on headless CI — see this comment"
+)]
 async fn resuming_an_account_keeps_its_stored_name_not_the_caller_supplied_one() {
     let directory_url = spawn_directory_server().await;
     let dir = tempfile::tempdir().unwrap();
@@ -244,9 +262,14 @@ async fn resuming_an_account_keeps_its_stored_name_not_the_caller_supplied_one()
 /// A genuinely new account with no display name at all should fail clearly
 /// rather than e.g. registering with an empty name.
 ///
-/// `#[serial]`: see `full_app_service_flow_dm_then_group`'s doc comment.
+/// `#[serial]`/`#[cfg_attr(... ignore)]`: see
+/// `full_app_service_flow_dm_then_group`'s doc comment.
 #[tokio::test]
 #[serial]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs a real D-Bus Secret Service, not reliably available on headless CI — see this comment"
+)]
 async fn creating_a_new_account_without_a_name_is_an_error() {
     let directory_url = spawn_directory_server().await;
     let dir = tempfile::tempdir().unwrap();
@@ -259,9 +282,14 @@ async fn creating_a_new_account_without_a_name_is_an_error() {
 /// it must update what a later `load_or_create` resumes with.
 ///
 /// `#[serial]`: see `full_app_service_flow_dm_then_group`'s doc comment —
-/// this is the specific test that surfaced the race.
+/// this is the specific test that surfaced the Windows race.
+/// `#[cfg_attr(... ignore)]`: same doc comment, the Linux side of it.
 #[tokio::test]
 #[serial]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs a real D-Bus Secret Service, not reliably available on headless CI — see this comment"
+)]
 async fn rename_persists_and_survives_resume() {
     let directory_url = spawn_directory_server().await;
     let dir = tempfile::tempdir().unwrap();

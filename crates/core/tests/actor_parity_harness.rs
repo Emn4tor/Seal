@@ -169,7 +169,18 @@ async fn spawn_directory_server() -> String {
     format!("http://{addr}")
 }
 
+// Ignored on Linux CI: this creates real `AppService`s, which resolve a KEK
+// through `identity::Keychain` — on Linux that needs a real D-Bus Secret
+// Service, which a headless CI runner doesn't reliably have (several
+// different keyring errors across several gnome-keyring-daemon tuning
+// attempts, including this exact test passing cleanly in one run and
+// failing in the next). Same disclosed-gap treatment as this project's
+// real-audio-hardware tests. Real coverage still runs on macOS/Windows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs a real D-Bus Secret Service, not reliably available on headless CI — see this comment"
+)]
 async fn two_independent_actor_loops_dm_and_group_like_the_real_app() {
     let directory_url = spawn_directory_server().await;
 

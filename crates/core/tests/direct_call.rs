@@ -149,8 +149,14 @@ async fn ringing_then_accepting_connects_a_direct_call() {
 
 /// A declined call never starts audio on either side, and the caller learns
 /// about the decline. No mic/speaker involved (the call never connects), so
-/// this one isn't gated behind `--ignored`.
+/// this one isn't gated behind `--ignored` in general — only on Linux CI
+/// specifically, since it still creates real `AppService`s that need a
+/// working OS keychain (see `actor_parity_harness.rs`'s identical comment).
 #[tokio::test]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs a real D-Bus Secret Service, not reliably available on headless CI — see this comment"
+)]
 async fn declining_a_call_never_connects_it() {
     let directory_url = spawn_directory_server().await;
 

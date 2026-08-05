@@ -115,7 +115,13 @@ async fn wait_for_message_count(
     }
 }
 
+// Ignored on Linux CI: creates real `AppService`s, which need a working OS
+// keychain — see `actor_parity_harness.rs`'s identical comment for why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs a real D-Bus Secret Service, not reliably available on headless CI — see this comment"
+)]
 async fn messaging_recovers_after_the_other_side_restarts() {
     let directory_url = spawn_directory_server().await;
 

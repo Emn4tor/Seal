@@ -7,6 +7,17 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # `.cargo/config.toml` sets `rustc-wrapper = "sccache"` for local dev
+  # speed — CI runners don't have sccache installed (and, being ephemeral,
+  # wouldn't get much benefit from it without also wiring up a persistent
+  # cache backend for it), so every `cargo` invocation would otherwise fail
+  # immediately with "could not execute process `sccache ...`". This
+  # env-var override beats the config file without needing to touch it,
+  # same fix `scripts/setup-backend.sh` already applies for the same
+  # reason on a local machine that has the wrapper configured but not
+  # installed. `Swatinem/rust-cache@v2` below already covers the actual
+  # caching need for CI.
+  CARGO_BUILD_RUSTC_WRAPPER: ""
 
 jobs:
   rust:

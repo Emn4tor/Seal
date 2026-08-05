@@ -50,6 +50,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # `.cargo/config.toml` sets `rustc-wrapper = "sccache"` for local
+          # dev speed — this runner doesn't have sccache installed, so the
+          # `cargo build` this step runs (via `tauri-action` -> `npm run
+          # tauri build`) would otherwise fail immediately with "could not
+          # execute process `sccache ...`". Overriding it here beats the
+          # config file without touching it — same fix as `ci.yml`'s `rust`
+          # job, see that env block's comment for the full reasoning.
+          CARGO_BUILD_RUSTC_WRAPPER: ""
         with:
           projectPath: ./apps/desktop
           args: ${{ matrix.args }}

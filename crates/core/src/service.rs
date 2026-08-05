@@ -1176,9 +1176,7 @@ impl AppService {
         preferred_input: Option<String>,
         preferred_output: Option<String>,
     ) -> anyhow::Result<()> {
-        if self.voice_call.is_some() {
-            self.leave_voice_channel()?;
-        }
+        self.leave_any_current_call();
         let control = self.node.voice_control();
         let call = VoiceCallState::start(
             voice::CallScope::Group {
@@ -1246,20 +1244,49 @@ impl AppService {
         Ok(())
     }
 
+    /// Tears down whatever call is currently occupying us — a connected
+    /// one (`voice_call`, group or direct, via `leave_voice_channel`) and/or
+    /// a still-ringing one (`pending_call`, either direction) — so that
+    /// joining a voice channel or starting a new call always begins from a
+    /// clean slate instead of piling a second one on top of the first and
+    /// leaving both the backend and (via the resulting events) the frontend
+    /// in an inconsistent state. Best-effort: a failed departure/decline
+    /// announcement here is logged, not propagated — the *new* action this
+    /// is clearing the way for is what the caller actually cares about
+    /// succeeding, not whether the old call's goodbye message made it out.
+    fn leave_any_current_call(&mut self) {
+        if let Err(e) = self.leave_voice_channel() {
+            tracing::warn!(error = %e, "failed to leave the current voice call while auto-leaving for a new one");
+        }
+        if let Some(pending) = self.pending_call.take() {
+            let result = match pending.direction {
+                CallDirection::Incoming => self
+                    .node
+                    .send_call_decline(&pending.peer_user_id, &pending.call_id),
+                CallDirection::Outgoing => self
+                    .node
+                    .send_call_end(&pending.peer_user_id, &pending.call_id),
+            };
+            if let Err(e) = result {
+                tracing::warn!(error = %e, call_id = %pending.call_id, "failed to notify the peer while auto-leaving a pending call");
+            }
+        }
+    }
+
     /// Calls `peer_user_id` 1:1 — sends a ring and returns the call id the
     /// frontend should track (to show "Calling…" and let the user cancel
     /// via `end_call`). The actual audio doesn't start until they accept;
-    /// see `ChatEvent::CallAccepted`. Fails outright if we're already
-    /// ringing or in any call (group or 1:1) — there's no call-waiting.
+    /// see `ChatEvent::CallAccepted`. Auto-leaves whatever call (group or
+    /// 1:1, connected or still ringing) we were already in first — there's
+    /// no call-waiting, but starting a new call is always allowed, not
+    /// rejected, matching `join_voice_channel`'s own auto-leave.
     pub async fn call_contact(
         &mut self,
         peer_user_id: &str,
         preferred_input: Option<String>,
         preferred_output: Option<String>,
     ) -> anyhow::Result<String> {
-        if self.voice_call.is_some() || self.pending_call.is_some() {
-            anyhow::bail!("already in or starting a call");
-        }
+        self.leave_any_current_call();
         self.ensure_connected_contact(peer_user_id).await?;
         self.ensure_direct_session(peer_user_id).await?;
         let call_id = uuid::Uuid::new_v4().to_string();

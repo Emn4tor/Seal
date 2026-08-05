@@ -94,6 +94,18 @@ export default function App() {
   // knows to clean up the real `pending_call` the backend ends up with
   // instead of leaving it stuck there forever (see `handleStartCall`).
   const callAttemptRef = useRef(0);
+  // Lifted out of `VoiceCallPanel` (which used to track "joined" as its own
+  // local state) so it survives that component unmounting when navigating
+  // away, and so it can be coordinated with `activeCall` in one place: a
+  // group voice channel and a 1:1 call are mutually exclusive backend-side
+  // (`AppService::leave_any_current_call` auto-leaves whichever one you had
+  // before starting the other), and without a single frontend source of
+  // truth for "which one is that", the UI could easily end up showing a
+  // call that the backend already silently tore down out from under it.
+  const [joinedVoiceChannel, setJoinedVoiceChannel] = useState<{
+    groupId: string;
+    channelId: string;
+  } | null>(null);
 
   function dismissToast(id: string) {
     setToasts((ts) => ts.filter((t) => t.id !== id));
@@ -546,6 +558,14 @@ export default function App() {
   // `callContact` actually settles.
   async function handleStartCall(peerUserId: string) {
     if (activeCall) return; // no call-waiting — matches the backend's own busy-auto-decline
+    if (joinedVoiceChannel) {
+      // `callContact` auto-leaves whatever voice call we're already in
+      // server-side (see `AppService::leave_any_current_call`) — this just
+      // keeps our own UI in sync with that instead of continuing to show a
+      // group call that's already been silently left.
+      setJoinedVoiceChannel(null);
+      playVoiceLeaveSound();
+    }
     const attempt = ++callAttemptRef.current;
     const placeholderId = `pending-${attempt}`;
     setActiveCall({ callId: placeholderId, peerUserId, phase: "outgoing", pending: true });
@@ -572,6 +592,12 @@ export default function App() {
 
   async function handleAcceptCall() {
     if (!activeCall) return;
+    if (joinedVoiceChannel) {
+      // Same reasoning as `handleStartCall`: `accept_call` (via
+      // `start_direct_call`) auto-leaves the group call server-side.
+      setJoinedVoiceChannel(null);
+      playVoiceLeaveSound();
+    }
     await api.acceptCall(activeCall.callId, getPreferredInputDevice(), getPreferredOutputDevice());
     stopRingtone();
     setActiveCall((c) => (c ? { ...c, phase: "connected" } : c));
@@ -598,6 +624,26 @@ export default function App() {
       api.endCall(callId).catch(() => {});
     }
     if (phase === "connected") playVoiceLeaveSound();
+  }
+
+  // Owns the actual `api.joinVoiceChannel` call (rather than leaving it to
+  // `VoiceCallPanel`) so it can clear a ringing/connected 1:1 call's UI in
+  // the same place — `join_voice_channel` auto-leaves it server-side (see
+  // `AppService::leave_any_current_call`), this keeps the frontend in sync
+  // with that instead of leaving a dead call on screen.
+  async function handleJoinVoiceChannel(groupId: string, channelId: string) {
+    if (activeCall) {
+      stopRingtone();
+      callAttemptRef.current++; // invalidates a still-in-flight `callContact()`, if any
+      setActiveCall(null);
+    }
+    await api.joinVoiceChannel(groupId, channelId, getPreferredInputDevice(), getPreferredOutputDevice());
+    setJoinedVoiceChannel({ groupId, channelId });
+  }
+
+  async function handleLeaveVoiceChannel() {
+    await api.leaveVoiceChannel();
+    setJoinedVoiceChannel(null);
   }
 
   if (!splashDone) {
@@ -743,6 +789,12 @@ export default function App() {
           channelId={selected.channelId}
           channelName={activeChannel.name}
           currentUserId={userId!}
+          joined={
+            joinedVoiceChannel?.groupId === selected.groupId &&
+            joinedVoiceChannel?.channelId === selected.channelId
+          }
+          onJoin={() => handleJoinVoiceChannel(selected.groupId, selected.channelId)}
+          onLeave={handleLeaveVoiceChannel}
         />
       ) : chatConversationId ? (
         <ChatPane

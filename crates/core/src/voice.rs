@@ -53,6 +53,23 @@ pub const DEFAULT_MIC_THRESHOLD_DB: f32 = -50.0;
 /// "speaking": bridges brief network jitter without being sluggish.
 const SPEAKING_HANGOVER: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// How many consecutive below-threshold frames the noise gate tolerates
+/// before it actually closes and stops transmitting — 10 frames * 20ms =
+/// 200ms, a standard gate "release"/hold time. Without this, a quiet
+/// consonant or a brief breath mid-sentence (extremely common in normal
+/// speech) drops the level below threshold for a frame or two, the gate
+/// slams shut, then reopens a moment later when the next syllable starts —
+/// each open/close transition stops and restarts transmission with no
+/// ramp, which is exactly what an abrupt digital "click" is. A sentence
+/// with several such dips sounds like a rapid train of clicks, audible as
+/// a buzzing/whirring texture riding on top of the voice, sometimes loud
+/// enough to drown it out. Holding the gate open across brief dips means
+/// far fewer transitions in the first place — genuinely closing only
+/// during real pauses between words/sentences — and what transitions
+/// remain are further softened by the playback-side declick filter (see
+/// `spawn_audio_io_thread`'s output stream).
+const GATE_HOLD_FRAMES: u32 = 10;
+
 const MIXER_TICK: std::time::Duration = std::time::Duration::from_millis(20);
 const CAPTURE_POLL: std::time::Duration = std::time::Duration::from_millis(5);
 /// How often an encoded frame actually goes out on the wire, one at a time —
@@ -259,13 +276,30 @@ async fn spawn_audio_io_thread(
                 None,
             )?;
 
+            let mut declicked = 0.0f32;
             let output_stream = output.build_output_stream(
                 output_config,
                 move |data: &mut [f32], _| {
                     for frame in data.chunks_mut(output_channels) {
-                        let sample = speaker_rx.pop().unwrap_or(0.0);
+                        // The ring buffer legitimately runs dry constantly —
+                        // any tick nobody's speaking, or a gate-hold boundary
+                        // (see `GATE_HOLD_FRAMES`), leaves it un-topped-up
+                        // and this falls back to `0.0`. Jumping straight to
+                        // (or back out of) that fallback is a real
+                        // discontinuity — audible as a sharp digital click,
+                        // and one that happens on *every* underrun edge, not
+                        // just the one at call start. A one-pole low-pass
+                        // closes that gap over a handful of samples instead
+                        // of in one step: negligible effect on continuous
+                        // real audio (adjacent samples of a band-limited
+                        // voice signal are already close together, so the
+                        // filter tracks them almost exactly), but it turns
+                        // an instant step into a short, much less audible
+                        // ramp at every underrun boundary.
+                        let target = speaker_rx.pop().unwrap_or(0.0);
+                        declicked += 0.05 * (target - declicked);
                         for s in frame {
-                            *s = sample;
+                            *s = declicked;
                         }
                     }
                 },
@@ -746,6 +780,11 @@ async fn run_encode_loop(
     let mut shifted_acc: Vec<f32> = Vec::new();
     let mut encoder = AdpcmEncoder::new();
     let mut drained = Vec::with_capacity(4096);
+    // How many consecutive frames it's been since the mic level last
+    // crossed the threshold — starts "long ago" so the gate is closed at
+    // the very start of a call. See `GATE_HOLD_FRAMES` below for why this
+    // exists.
+    let mut frames_since_loud = GATE_HOLD_FRAMES;
 
     while running.load(Ordering::Relaxed) {
         tokio::time::sleep(CAPTURE_POLL).await;
@@ -773,10 +812,16 @@ async fn run_encode_loop(
             };
 
             let threshold = *mic_threshold_db.lock().unwrap();
-            let speaking = dbfs(&frame_samples) >= threshold;
+            let loud_enough = dbfs(&frame_samples) >= threshold;
+            frames_since_loud = if loud_enough {
+                0
+            } else {
+                frames_since_loud.saturating_add(1)
+            };
+            let speaking = frames_since_loud < GATE_HOLD_FRAMES;
             local_speaking.store(speaking, Ordering::Relaxed);
             if !speaking {
-                continue; // the noise gate: below threshold, don't send this frame at all.
+                continue; // the noise gate: below threshold for a while now, don't send this frame at all.
             }
 
             if hear_self.load(Ordering::Relaxed)

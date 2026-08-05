@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, onChatEvent, onMicMutedChanged } from "../lib/tauri";
-import { getMicThresholdDb, getPreferredInputDevice, getPreferredOutputDevice } from "../lib/voiceSettings";
+import { getMicThresholdDb } from "../lib/voiceSettings";
 import { getPttEnabled, getPttShortcut } from "../lib/pushToTalk";
 import {
   playMicMutedSound,
@@ -14,6 +14,17 @@ interface VoiceCallPanelProps {
   channelId: string;
   channelName: string;
   currentUserId: string;
+  /** Whether *this* channel is the one currently joined — a controlled
+   * prop rather than local state, owned by `App.tsx` alongside `activeCall`
+   * (the 1:1 call state): the two are mutually exclusive server-side (see
+   * `AppService::leave_any_current_call`), and keeping "which one is
+   * active" in one shared place is what lets this panel notice — and
+   * reset itself — when starting or accepting a 1:1 call elsewhere in the
+   * app silently left this channel out from under it, instead of going on
+   * showing a call that's already dead. */
+  joined: boolean;
+  onJoin: () => Promise<void>;
+  onLeave: () => Promise<void>;
 }
 
 const SPEAKING_POLL_MS = 200;
@@ -85,8 +96,15 @@ function ParticipantTile({ userId, isSelf, speaking }: { userId: string; isSelf:
  * a rigorous anonymity guarantee against serious voice-biometric analysis,
  * and it's labeled that way here rather than oversold.
  */
-export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId }: VoiceCallPanelProps) {
-  const [joined, setJoined] = useState(false);
+export function VoiceCallPanel({
+  groupId,
+  channelId,
+  channelName,
+  currentUserId,
+  joined,
+  onJoin,
+  onLeave,
+}: VoiceCallPanelProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [participants, setParticipants] = useState<string[]>([]);
@@ -97,10 +115,6 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
   const participantsRef = useRef<string[]>([]);
   const pttEnabled = getPttEnabled() && !!getPttShortcut();
 
-  // The parent remounts this component (via a `key` on group+channel) on
-  // every channel switch, so state always starts fresh at "not joined" —
-  // joining elsewhere leaves whatever call was active first, so that can
-  // never be stale or misleading.
   useEffect(() => {
     const unlisten = onChatEvent((event) => {
       if (
@@ -153,17 +167,32 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
     };
   }, [joined]);
 
+  // The single place local UI state gets cleared for *any* reason we stop
+  // being joined — clicking "Leave" ourselves, or `App.tsx` silently
+  // auto-leaving this channel because a 1:1 call started/was accepted
+  // elsewhere. Reacting to the prop rather than duplicating this in
+  // `handleLeave` means both paths always leave the same clean slate
+  // behind, instead of the "taken over elsewhere" path skipping it.
+  useEffect(() => {
+    if (joined) return;
+    setParticipants([]);
+    participantsRef.current = [];
+    setSpeaking(new Set());
+    setMuted(false);
+    setChangerEnabled(false);
+    setHearSelf(false);
+  }, [joined]);
+
   async function handleJoin() {
     setError(null);
     setBusy(true);
     try {
-      await api.joinVoiceChannel(groupId, channelId, getPreferredInputDevice(), getPreferredOutputDevice());
+      await onJoin();
       await api.setMicThresholdDb(getMicThresholdDb());
       if (pttEnabled) await api.setMicMuted(true);
       // Asks the backend rather than assuming `pttEnabled` — it's the
       // actual source of truth, and it's what just got set two lines up.
       setMuted(await api.getMicMuted());
-      setJoined(true);
       playVoiceJoinSound();
     } catch (err) {
       setError(String(err));
@@ -175,14 +204,10 @@ export function VoiceCallPanel({ groupId, channelId, channelName, currentUserId 
   async function handleLeave() {
     setBusy(true);
     try {
-      await api.leaveVoiceChannel();
+      await onLeave();
     } catch (err) {
       setError(String(err));
     } finally {
-      setJoined(false);
-      setParticipants([]);
-      participantsRef.current = [];
-      setSpeaking(new Set());
       setBusy(false);
       playVoiceLeaveSound();
     }

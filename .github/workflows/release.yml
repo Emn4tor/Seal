@@ -32,7 +32,8 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-
+          cache-dependency-path: apps/desktop/package-lock.json
+    
       - name: Install Linux dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -40,6 +41,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev fuse
 
       - name: Install JavaScript dependencies
+        working-directory: apps/desktop
         run: npm ci
 
       - name: Build and Publish Tauri App

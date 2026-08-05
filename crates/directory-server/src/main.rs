@@ -83,18 +83,12 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    tokio::spawn({
-        let relay_bind_addr = relay_bind_addr;
-        async move {
-            if let Err(e) = directory_server::relay::run_relay(
-                relay_keypair,
-                relay_bind_addr,
-                relay_external_addr,
-            )
-            .await
-            {
-                tracing::error!(error = %e, "relay swarm exited");
-            }
+    tokio::spawn(async move {
+        if let Err(e) =
+            directory_server::relay::run_relay(relay_keypair, relay_bind_addr, relay_external_addr)
+                .await
+        {
+            tracing::error!(error = %e, "relay swarm exited");
         }
     });
 

@@ -222,6 +222,20 @@ pub enum ChatEventDto {
         channel_id: String,
         user_ids: Vec<String>,
     },
+    #[serde(rename = "call_invited")]
+    CallInvited { from: String, call_id: String },
+    #[serde(rename = "call_accepted")]
+    CallAccepted { from: String, call_id: String },
+    #[serde(rename = "call_declined")]
+    CallDeclined { from: String, call_id: String },
+    #[serde(rename = "call_ended")]
+    CallEnded { from: String, call_id: String },
+    #[serde(rename = "call_failed")]
+    CallFailed {
+        peer_user_id: String,
+        call_id: String,
+        reason: String,
+    },
 }
 
 impl TryFrom<p2p_core::ChatEvent> for ChatEventDto {
@@ -276,6 +290,27 @@ impl TryFrom<p2p_core::ChatEvent> for ChatEventDto {
                 group_id,
                 channel_id,
                 user_ids,
+            }),
+            p2p_core::ChatEvent::CallInvited { from, call_id } => {
+                Ok(ChatEventDto::CallInvited { from, call_id })
+            }
+            p2p_core::ChatEvent::CallAccepted { from, call_id } => {
+                Ok(ChatEventDto::CallAccepted { from, call_id })
+            }
+            p2p_core::ChatEvent::CallDeclined { from, call_id } => {
+                Ok(ChatEventDto::CallDeclined { from, call_id })
+            }
+            p2p_core::ChatEvent::CallEnded { from, call_id } => {
+                Ok(ChatEventDto::CallEnded { from, call_id })
+            }
+            p2p_core::ChatEvent::CallFailed {
+                peer_user_id,
+                call_id,
+                reason,
+            } => Ok(ChatEventDto::CallFailed {
+                peer_user_id,
+                call_id,
+                reason,
             }),
             // Connection/gossip-subscription events aren't surfaced to the
             // frontend yet — nothing there uses them. Raw `VoicePresence`

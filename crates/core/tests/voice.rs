@@ -4,7 +4,7 @@ use std::time::Duration;
 use identity::Identity;
 use libp2p::Multiaddr;
 use libp2p::core::multiaddr::Protocol;
-use p2p_core::{ChatNode, VoiceCallState};
+use p2p_core::{CallScope, ChatNode, VoiceCallState};
 
 /// Two real `ChatNode`s, connected over loopback TCP, each start a
 /// `VoiceCallState` for the same channel and one dials the other's raw
@@ -51,10 +51,14 @@ async fn two_nodes_establish_a_voice_call_and_track_presence() {
         }
     });
 
-    let call_a = VoiceCallState::start("group-1".into(), "channel-1".into(), control_a, None, None)
+    let scope = || CallScope::Group {
+        group_id: "group-1".into(),
+        channel_id: "channel-1".into(),
+    };
+    let call_a = VoiceCallState::start(scope(), control_a, None, None)
         .await
         .expect("start call on a");
-    let call_b = VoiceCallState::start("group-1".into(), "channel-1".into(), control_b, None, None)
+    let call_b = VoiceCallState::start(scope(), control_b, None, None)
         .await
         .expect("start call on b");
 

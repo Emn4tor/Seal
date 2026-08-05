@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { EMBEDDED_SERVER_SENTINEL, api } from "../lib/tauri";
 import { useModalEscape } from "../lib/useModalEscape";
 import type { AccountSummary, NetworkStatus } from "../lib/types";
@@ -29,6 +29,8 @@ import {
 import { getDndEnabled, saveDndEnabled } from "../lib/dndSettings";
 import { getNotificationSoundId, saveNotificationSoundId } from "../lib/notificationSoundSettings";
 import { NOTIFICATION_SOUNDS, type NotificationSoundId, playMessageSound } from "../lib/notificationSound";
+import { getRingtoneId, saveRingtoneId } from "../lib/ringtoneSettings";
+import { RINGTONES, type RingtoneHandle, type RingtoneId, previewRingtone } from "../lib/ringtones";
 
 interface SettingsPanelProps {
   userId: string;
@@ -207,6 +209,8 @@ export function SettingsPanel({
   const [notificationsEnabled, setNotificationsEnabled] = useState(getNotificationsEnabled);
   const [dndEnabled, setDndEnabled] = useState(getDndEnabled);
   const [notificationSoundId, setNotificationSoundId] = useState(getNotificationSoundId);
+  const [ringtoneId, setRingtoneId] = useState(getRingtoneId);
+  const ringtonePreviewRef = useRef<RingtoneHandle | null>(null);
 
   const [inputDevices, setInputDevices] = useState<string[]>([]);
   const [outputDevices, setOutputDevices] = useState<string[]>([]);
@@ -280,6 +284,17 @@ export function SettingsPanel({
     saveNotificationSoundId(id);
     playMessageSound(id);
   }
+
+  function handlePickRingtone(id: RingtoneId) {
+    setRingtoneId(id);
+    saveRingtoneId(id);
+    ringtonePreviewRef.current?.stop();
+    ringtonePreviewRef.current = previewRingtone(id);
+  }
+
+  useEffect(() => {
+    return () => ringtonePreviewRef.current?.stop();
+  }, []);
 
   function handlePickInputDevice(name: string) {
     const value = name || null;
@@ -608,6 +623,44 @@ export function SettingsPanel({
                           }}
                           role="button"
                           aria-label={`Preview ${NOTIFICATION_SOUNDS[id].label}`}
+                          className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-brass hover:bg-brass-wash"
+                        >
+                          Preview
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </Section>
+
+                <Section title="Ringtone">
+                  <p className="mt-3 text-sm text-text-muted">
+                    Plays on a loop while a 1:1 call is ringing. Picking one previews it briefly.
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {(Object.keys(RINGTONES) as RingtoneId[]).map((id) => (
+                      <button
+                        key={id}
+                        onClick={() => handlePickRingtone(id)}
+                        className={`flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2.5 text-left transition ${
+                          ringtoneId === id
+                            ? "border-brass-dim bg-brass-wash"
+                            : "border-border bg-ink hover:border-brass-dim/60"
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <p className={`text-sm font-medium ${ringtoneId === id ? "text-brass" : "text-text"}`}>
+                            {RINGTONES[id].label}
+                          </p>
+                          <p className="mt-0.5 text-xs text-text-muted">{RINGTONES[id].description}</p>
+                        </div>
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            ringtonePreviewRef.current?.stop();
+                            ringtonePreviewRef.current = previewRingtone(id);
+                          }}
+                          role="button"
+                          aria-label={`Preview ${RINGTONES[id].label}`}
                           className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-brass hover:bg-brass-wash"
                         >
                           Preview

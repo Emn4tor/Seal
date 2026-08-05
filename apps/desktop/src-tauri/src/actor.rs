@@ -96,6 +96,26 @@ pub enum Command {
     LeaveVoiceChannel {
         respond_to: oneshot::Sender<Result<(), String>>,
     },
+    CallContact {
+        peer_user_id: String,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
+    AcceptCall {
+        call_id: String,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
+    DeclineCall {
+        call_id: String,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
+    EndCall {
+        call_id: String,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
     SetVoiceChangerEnabled {
         enabled: bool,
         respond_to: oneshot::Sender<Result<(), String>>,
@@ -333,6 +353,52 @@ impl ActorHandle {
             .await?
     }
 
+    pub async fn call_contact(
+        &self,
+        peer_user_id: String,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
+    ) -> Result<String, String> {
+        self.call(|respond_to| Command::CallContact {
+            peer_user_id,
+            preferred_input,
+            preferred_output,
+            respond_to,
+        })
+        .await?
+    }
+
+    pub async fn accept_call(
+        &self,
+        call_id: String,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
+    ) -> Result<(), String> {
+        self.call(|respond_to| Command::AcceptCall {
+            call_id,
+            preferred_input,
+            preferred_output,
+            respond_to,
+        })
+        .await?
+    }
+
+    pub async fn decline_call(&self, call_id: String) -> Result<(), String> {
+        self.call(|respond_to| Command::DeclineCall {
+            call_id,
+            respond_to,
+        })
+        .await?
+    }
+
+    pub async fn end_call(&self, call_id: String) -> Result<(), String> {
+        self.call(|respond_to| Command::EndCall {
+            call_id,
+            respond_to,
+        })
+        .await?
+    }
+
     pub async fn set_voice_changer_enabled(&self, enabled: bool) -> Result<(), String> {
         self.call(|respond_to| Command::SetVoiceChangerEnabled {
             enabled,
@@ -460,7 +526,15 @@ async fn run(
                             | p2p_core::ChatEvent::GroupChannelsChanged { .. } => {
                                 let _ = app.emit("groups-updated", ());
                             }
-                            p2p_core::ChatEvent::DirectMessage { .. } => {
+                            p2p_core::ChatEvent::DirectMessage { .. }
+                            | p2p_core::ChatEvent::CallInvited { .. } => {
+                                // `CallInvited` self-heals an unknown caller
+                                // into a contact the same way `DirectMessage`
+                                // does (see `AppService::handle_call_invited`)
+                                // — without this, a call from someone not
+                                // already a contact would show their raw ID
+                                // in the incoming-call UI until something
+                                // else happened to refresh the list.
                                 let _ = app.emit("contacts-updated", ());
                             }
                             _ => {}
@@ -528,6 +602,18 @@ fn reject_not_initialized(cmd: Command) {
             let _ = respond_to.send(Err(err()));
         }
         Command::LeaveVoiceChannel { respond_to } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::CallContact { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::AcceptCall { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::DeclineCall { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::EndCall { respond_to, .. } => {
             let _ = respond_to.send(Err(err()));
         }
         Command::SetVoiceChangerEnabled { respond_to, .. } => {
@@ -736,6 +822,44 @@ async fn handle_command(app: &AppHandle, service: &mut AppService, cmd: Command)
         }
         Command::LeaveVoiceChannel { respond_to } => {
             let result = service.leave_voice_channel().map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
+        Command::CallContact {
+            peer_user_id,
+            preferred_input,
+            preferred_output,
+            respond_to,
+        } => {
+            let result = service
+                .call_contact(&peer_user_id, preferred_input, preferred_output)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
+        Command::AcceptCall {
+            call_id,
+            preferred_input,
+            preferred_output,
+            respond_to,
+        } => {
+            let result = service
+                .accept_call(&call_id, preferred_input, preferred_output)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
+        Command::DeclineCall {
+            call_id,
+            respond_to,
+        } => {
+            let result = service.decline_call(&call_id).map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
+        Command::EndCall {
+            call_id,
+            respond_to,
+        } => {
+            let result = service.end_call(&call_id).map_err(|e| e.to_string());
             let _ = respond_to.send(result);
         }
         Command::SetVoiceChangerEnabled {

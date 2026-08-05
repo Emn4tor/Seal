@@ -66,7 +66,12 @@ export type ChatEvent =
       group_id: string;
       channel_id: string;
       user_ids: string[];
-    };
+    }
+  | { type: "call_invited"; from: string; call_id: string }
+  | { type: "call_accepted"; from: string; call_id: string }
+  | { type: "call_declined"; from: string; call_id: string }
+  | { type: "call_ended"; from: string; call_id: string }
+  | { type: "call_failed"; peer_user_id: string; call_id: string; reason: string };
 
 export type Selection =
   | { kind: "dm"; userId: string }

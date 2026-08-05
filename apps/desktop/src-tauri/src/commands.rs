@@ -389,6 +389,50 @@ pub async fn leave_voice_channel(state: State<'_, AccountManager>) -> Result<(),
     state.current().await?.leave_voice_channel().await
 }
 
+/// Calls a contact 1:1 — sends a ring, returns the call id to track (for
+/// showing "Calling…" and letting the user cancel via `end_call`).
+#[tauri::command]
+pub async fn call_contact(
+    state: State<'_, AccountManager>,
+    peer_user_id: String,
+    preferred_input: Option<String>,
+    preferred_output: Option<String>,
+) -> Result<String, String> {
+    state
+        .current()
+        .await?
+        .call_contact(peer_user_id, preferred_input, preferred_output)
+        .await
+}
+
+/// Accepts a currently-ringing incoming call and starts the voice stream.
+#[tauri::command]
+pub async fn accept_call(
+    state: State<'_, AccountManager>,
+    call_id: String,
+    preferred_input: Option<String>,
+    preferred_output: Option<String>,
+) -> Result<(), String> {
+    state
+        .current()
+        .await?
+        .accept_call(call_id, preferred_input, preferred_output)
+        .await
+}
+
+/// Rejects a currently-ringing incoming call.
+#[tauri::command]
+pub async fn decline_call(state: State<'_, AccountManager>, call_id: String) -> Result<(), String> {
+    state.current().await?.decline_call(call_id).await
+}
+
+/// Ends a 1:1 call in any state — cancels one still ringing or hangs up one
+/// already connected.
+#[tauri::command]
+pub async fn end_call(state: State<'_, AccountManager>, call_id: String) -> Result<(), String> {
+    state.current().await?.end_call(call_id).await
+}
+
 /// Available microphones, for Settings' device picker — a plain hardware
 /// query, no account/backend involvement needed. Run off the async
 /// runtime's worker threads since device enumeration is a blocking OS call.

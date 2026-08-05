@@ -81,6 +81,52 @@ pub enum ChatEvent {
     GroupChannelsChanged {
         group_id: String,
     },
+    /// Someone is calling us 1:1 — the frontend should show an incoming-call
+    /// screen (ring sound, accept/decline). `AppService::next_event` already
+    /// auto-declines this (sending `CallDecline` back) if we're already in
+    /// or ringing another call, so by the time the frontend sees this, it's
+    /// always safe to actually offer.
+    CallInvited {
+        from: String,
+        call_id: String,
+    },
+    /// The person we called picked up — the caller's cue to move from
+    /// "ringing" to the active call UI. The actual voice stream connects
+    /// separately (see `AppService::accept_call`); this just reports the
+    /// signaling outcome.
+    CallAccepted {
+        from: String,
+        call_id: String,
+    },
+    /// The person we called rejected it.
+    CallDeclined {
+        from: String,
+        call_id: String,
+    },
+    /// The other side ended the call — cancelled it while it was still
+    /// ringing, or hung up an active one. Either way, our own local call
+    /// state for `call_id` is already torn down by the time this is
+    /// returned; the frontend just needs to leave the call UI.
+    CallEnded {
+        from: String,
+        call_id: String,
+    },
+    /// Our own `CallInvite` (ringing someone) or `CallAccept` (answering
+    /// someone) never reached them — most commonly because their
+    /// last-known address is stale and they're not actually online right
+    /// now, but also a transport-level dial failure/timeout, or the
+    /// recipient's side failing to decrypt it. Distinct from the generic
+    /// `MessageSendFailed` (see `ChatNode::pending_call_sends`) so the
+    /// frontend can tell "the call failed" apart from "an unrelated
+    /// message to this same person failed" and react precisely — cancel
+    /// the ring screen and say why, rather than leave it hanging or show
+    /// an unrelated toast. Our own local call state for `call_id` is
+    /// already torn down by the time this is returned.
+    CallFailed {
+        peer_user_id: String,
+        call_id: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, onChatEvent, onContactsUpdated, onGroupsUpdated } from "./lib/tauri";
 import { useChatStore } from "./store/useChatStore";
 import { Onboarding } from "./components/Onboarding";
@@ -15,11 +15,16 @@ import { Splash } from "./components/Splash";
 import { TutorialWizard } from "./components/TutorialWizard";
 import { CipherSeal, type SealStatus } from "./components/CipherSeal";
 import { VoiceCallPanel } from "./components/VoiceCallPanel";
+import { CallOverlay, type ActiveCallInfo } from "./components/CallOverlay";
 import { ToastStack, type ToastItem } from "./components/ToastStack";
 import { applyPushToTalk, getPttEnabled, getPttShortcut } from "./lib/pushToTalk";
 import { getAutostartEnabled, syncAutostart } from "./lib/autostart";
 import { ensureNotificationPermission, playNotificationSound, showNotificationPopup } from "./lib/notifications";
 import { isGroupMuted } from "./lib/mutedConversations";
+import { getPreferredInputDevice, getPreferredOutputDevice } from "./lib/voiceSettings";
+import { playVoiceJoinSound, playVoiceLeaveSound } from "./lib/voiceSounds";
+import { getRingtoneId } from "./lib/ringtoneSettings";
+import { type RingtoneHandle, startCallingSound, startRingtone } from "./lib/ringtones";
 import type { AccountSummary, ChannelKind } from "./lib/types";
 
 const TOAST_LIFETIME_MS = 6000;
@@ -70,9 +75,32 @@ export default function App() {
   const [showTutorial, setShowTutorial] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [activeCall, setActiveCall] = useState<ActiveCallInfo | null>(null);
+  const ringtoneRef = useRef<RingtoneHandle | null>(null);
+  // Mirrors `activeCall` for the `onChatEvent` handler below, which is
+  // registered once per `userId` (see its effect's dependency array) and so
+  // otherwise closes over a stale value rather than whatever's current by
+  // the time a `call_ended` event actually arrives.
+  const activeCallRef = useRef<ActiveCallInfo | null>(null);
+  useEffect(() => {
+    activeCallRef.current = activeCall;
+  }, [activeCall]);
+  // Bumped on every `handleStartCall`/`handleEndCall` — lets an in-flight
+  // `callContact()` (the directory lookup + dial, which can take a while
+  // and can fail, e.g. the peer's last-known address is stale because
+  // they're not actually online) recognize it's been superseded — cancelled
+  // locally, or overtaken by a fresh call — by the time it settles, so it
+  // knows to clean up the real `pending_call` the backend ends up with
+  // instead of leaving it stuck there forever (see `handleStartCall`).
+  const callAttemptRef = useRef(0);
 
   function dismissToast(id: string) {
     setToasts((ts) => ts.filter((t) => t.id !== id));
+  }
+
+  function stopRingtone() {
+    ringtoneRef.current?.stop();
+    ringtoneRef.current = null;
   }
 
   // The sound always plays (a message landing while you're looking right at
@@ -346,6 +374,49 @@ export default function App() {
             .contacts.find((c) => c.user_id === event.peer_user_id);
           const who = sender?.display_name ?? event.peer_user_id?.slice(0, 12) ?? "a peer";
           notify("Message not delivered", `Couldn't reach ${who}. It hasn't been sent.`, { variant: "error" });
+        } else if (event.type === "call_invited") {
+          // The backend already auto-declines an invite while we're busy
+          // (ringing or already in a call — see `AppService::handle_call_invited`),
+          // so seeing this event at all means we're free to ring. Bumping
+          // the attempt counter covers the narrow race where this arrives
+          // while we're still mid-dial ourselves (our own `callContact()`
+          // hasn't resolved yet, so the backend hadn't marked itself busy
+          // in time to auto-decline this one): it marks our own dial as
+          // superseded, so once it does resolve, `handleStartCall` cleanly
+          // hangs it up instead of clobbering the incoming call this event
+          // is about to put on screen.
+          callAttemptRef.current++;
+          stopRingtone();
+          ringtoneRef.current = startRingtone(getRingtoneId());
+          setActiveCall({ callId: event.call_id, peerUserId: event.from, phase: "incoming" });
+        } else if (event.type === "call_accepted") {
+          stopRingtone();
+          setActiveCall((c) => (c && c.callId === event.call_id ? { ...c, phase: "connected" } : c));
+          playVoiceJoinSound();
+        } else if (event.type === "call_declined") {
+          stopRingtone();
+          setActiveCall((c) => (c && c.callId === event.call_id ? null : c));
+        } else if (event.type === "call_ended") {
+          const wasActive = activeCallRef.current?.callId === event.call_id;
+          stopRingtone();
+          setActiveCall((c) => (c && c.callId === event.call_id ? null : c));
+          if (wasActive) playVoiceLeaveSound();
+        } else if (event.type === "call_failed") {
+          // Our own `CallInvite`/`CallAccept` never reached them — most
+          // commonly because they're not actually online right now despite
+          // a still-valid directory presence record (see
+          // `ChatNode::pending_call_sends`). The backend's already torn
+          // down its side of this call by the time this arrives; cancel
+          // the ring screen here too and say why, instead of leaving it
+          // stuck on "Calling…" indefinitely.
+          if (activeCallRef.current?.callId === event.call_id) {
+            stopRingtone();
+            setActiveCall(null);
+            const who =
+              useChatStore.getState().contacts.find((c) => c.user_id === event.peer_user_id)
+                ?.display_name ?? event.peer_user_id.slice(0, 12);
+            notify("Call failed", `Couldn't reach ${who} — they may not be online.`, { variant: "error" });
+          }
         }
       }),
       onGroupsUpdated(() => void refreshGroups()),
@@ -445,6 +516,72 @@ export default function App() {
     await api.panicPurge();
     setShowSettings(false);
     await afterAccountRemoved();
+  }
+
+  // Shows the ring screen and starts the ringback sound the instant the
+  // button is pressed, rather than waiting for `callContact` to resolve —
+  // that call does a directory lookup and dial, which can take a while and
+  // can fail outright (e.g. the peer's last known address is stale because
+  // they're not actually online right now), and pressing "Call" should
+  // give some feedback immediately rather than appear to do nothing until
+  // it either rings or times out. `callId` starts out as a local
+  // placeholder and gets patched to the real one — or, on failure, the
+  // whole call is torn back down and the error surfaced — once
+  // `callContact` actually settles.
+  async function handleStartCall(peerUserId: string) {
+    if (activeCall) return; // no call-waiting — matches the backend's own busy-auto-decline
+    const attempt = ++callAttemptRef.current;
+    const placeholderId = `pending-${attempt}`;
+    setActiveCall({ callId: placeholderId, peerUserId, phase: "outgoing", pending: true });
+    stopRingtone();
+    ringtoneRef.current = startCallingSound();
+    try {
+      const callId = await api.callContact(peerUserId, getPreferredInputDevice(), getPreferredOutputDevice());
+      if (callAttemptRef.current !== attempt) {
+        // Cancelled locally, or superseded by an incoming call, while the
+        // dial was still in flight — the backend didn't have a real
+        // `pending_call` to cancel until just now (see `AppService::call_contact`),
+        // so there was nothing to clean up until this resolved.
+        api.endCall(callId).catch(() => {});
+        return;
+      }
+      setActiveCall((c) => (c && c.callId === placeholderId ? { callId, peerUserId, phase: "outgoing" } : c));
+    } catch (err) {
+      if (callAttemptRef.current !== attempt) return; // already cleaned up by whatever superseded this
+      stopRingtone();
+      setActiveCall((c) => (c && c.callId === placeholderId ? null : c));
+      notify("Call failed", String(err), { variant: "error" });
+    }
+  }
+
+  async function handleAcceptCall() {
+    if (!activeCall) return;
+    await api.acceptCall(activeCall.callId, getPreferredInputDevice(), getPreferredOutputDevice());
+    stopRingtone();
+    setActiveCall((c) => (c ? { ...c, phase: "connected" } : c));
+  }
+
+  function handleDeclineCall() {
+    if (!activeCall) return;
+    stopRingtone();
+    const callId = activeCall.callId;
+    setActiveCall(null);
+    api.declineCall(callId).catch(() => {});
+  }
+
+  function handleEndCall() {
+    if (!activeCall) return;
+    stopRingtone();
+    callAttemptRef.current++; // invalidates a still-in-flight `callContact()`, if any (see `handleStartCall`)
+    const { pending, phase, callId } = activeCall;
+    setActiveCall(null);
+    if (!pending) {
+      // A pending (still-dialing) call has no real `pending_call` on the
+      // backend yet to end — `handleStartCall`'s own continuation cleans
+      // that up once the dial actually resolves.
+      api.endCall(callId).catch(() => {});
+    }
+    if (phase === "connected") playVoiceLeaveSound();
   }
 
   if (!splashDone) {
@@ -602,6 +739,7 @@ export default function App() {
           contacts={contacts}
           loadError={messagesError}
           placeholder="No messages yet. Say hello — it's sealed before it leaves this device."
+          onCall={selected?.kind === "dm" ? () => handleStartCall(selected.userId) : undefined}
           onSend={async (body, attachment) => {
             if (selected?.kind === "dm") await api.sendDirectMessage(selected.userId, body, attachment);
             else if (selected?.kind === "group")
@@ -684,6 +822,18 @@ export default function App() {
         />
       )}
       {showTutorial && <TutorialWizard userId={userId} onClose={closeTutorial} />}
+      {activeCall && (
+        <CallOverlay
+          call={activeCall}
+          peerDisplayName={
+            contacts.find((c) => c.user_id === activeCall.peerUserId)?.display_name ??
+            activeCall.peerUserId.slice(0, 12)
+          }
+          onAccept={handleAcceptCall}
+          onDecline={handleDeclineCall}
+          onEnd={handleEndCall}
+        />
+      )}
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

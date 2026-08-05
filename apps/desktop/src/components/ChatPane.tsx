@@ -24,6 +24,23 @@ interface ChatPaneProps {
    * above whatever messages are already cached, rather than replacing
    * them, since a failed refresh doesn't mean the cached ones are wrong. */
   loadError?: string | null;
+  /** Starts a 1:1 voice call with the person this conversation is with —
+   * only set (and the header button only shown) for a DM, never a group
+   * channel, which has its own voice channels instead. */
+  onCall?: () => void;
+}
+
+function PhoneIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M6.6 10.8c1.4 2.8 3.8 5.2 6.6 6.6l2.2-2.2a1 1 0 0 1 1.1-.2c1.2.5 2.5.7 3.8.7a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.5 21 3 13.5 3 4.7a1 1 0 0 1 1-1h3.3a1 1 0 0 1 1 1c0 1.3.2 2.6.7 3.8a1 1 0 0 1-.2 1.1L6.6 10.8Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 function senderName(contacts: Contact[] | undefined, userId: string): string {
@@ -119,6 +136,7 @@ export function ChatPane({
   isGroup,
   contacts,
   loadError,
+  onCall,
 }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -168,10 +186,20 @@ export function ChatPane({
     <div className="flex h-full min-w-0 flex-1 flex-col bg-ink">
       <div className="flex items-center gap-2.5 border-b border-border px-5 py-3.5">
         <CipherSeal status={sealStatus} size={18} />
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <h2 className="truncate font-display text-[15px] font-semibold text-text">{title}</h2>
           <p className="truncate text-xs text-text-faint">{subtitle}</p>
         </div>
+        {onCall && (
+          <button
+            onClick={onCall}
+            aria-label="Start a voice call"
+            title="Start a voice call"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-verdigris transition hover:scale-110 hover:bg-verdigris-wash active:scale-90"
+          >
+            <PhoneIcon />
+          </button>
+        )}
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4">

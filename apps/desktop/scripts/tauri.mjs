@@ -134,10 +134,17 @@ if (isDev) {
     }
   };
   extraEnv.TAURI_DEV_PORT = String(port);
+  const rawJson = JSON.stringify({ build: { devUrl: `http://localhost:${port}` } });
+
+  // platform-specific formatting
+  const configArg = process.platform === "win32"
+    ? `"${rawJson.replace(/"/g, '""')}"` // windows CMD needs "" instad of "
+    : rawJson;                           // mac/linux is satisfied with the rawJson
+
   spawnArgs = [
     args[0],
     "--config",
-    JSON.stringify({ build: { devUrl: `http://localhost:${port}` } }),
+    configArg,
     ...args.slice(1),
   ];
 }

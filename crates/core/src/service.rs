@@ -22,18 +22,6 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
-/// Whether a multiaddr's IP component is loopback — used to prefer
-/// LAN-reachable addresses over `127.0.0.1`/`::1` when announcing presence,
-/// since a loopback address is only ever useful to something on this same
-/// machine.
-fn is_loopback_addr(addr: &Multiaddr) -> bool {
-    addr.iter().any(|p| match p {
-        libp2p::multiaddr::Protocol::Ip4(ip) => ip.is_loopback(),
-        libp2p::multiaddr::Protocol::Ip6(ip) => ip.is_loopback(),
-        _ => false,
-    })
-}
-
 /// Attachments are capped at the application level (Discord's long-standing
 /// default), enforced here so an oversized file never reaches the P2P
 /// transport at all, regardless of what the transport's own size limits
@@ -279,15 +267,21 @@ impl AppService {
         let listen_addrs = node
             .wait_for_listen_addrs(std::time::Duration::from_millis(300))
             .await;
-        let non_loopback: Vec<&Multiaddr> = listen_addrs
-            .iter()
-            .filter(|a| !is_loopback_addr(a))
-            .collect();
-        // Prefer real, LAN-reachable addresses, but fall back to whatever
-        // actually got bound (even loopback-only) rather than advertising
-        // nothing — a network-isolated sandbox/CI environment may not
-        // enumerate any non-loopback interface at all, and this crate's own
-        // tests dial contacts by these addresses within the same process.
+        // Advertise every address we're actually listening on, loopback
+        // included — not just non-loopback ones. Two instances on the same
+        // machine (the documented local two-account test flow) are exactly
+        // the case where a LAN-facing address can be present but not
+        // actually dialable right now (e.g. macOS's Local Network privacy
+        // permission silently blocking a private-range dial for an
+        // unsigned dev build until the user grants it — see
+        // `apps/desktop/src-tauri/Info.plist`'s `NSLocalNetworkUsageDescription`)
+        // while loopback would have worked fine. `send_request_with_addresses`
+        // already tries every candidate address on a contact, so handing
+        // it loopback *in addition to* LAN addresses (rather than
+        // excluding it whenever a LAN one exists) is a free fallback: a
+        // remote peer on a different machine just can't reach our
+        // loopback candidate and falls through to the others, exactly as
+        // it already does for any other unreachable candidate.
         //
         // `simulate_wan` skips all of that and advertises nothing: not a
         // preference for the relay, an actual absence of any directly-
@@ -296,10 +290,8 @@ impl AppService {
         // `load_or_create_with`'s doc comment.
         let addrs: Vec<String> = if simulate_wan {
             Vec::new()
-        } else if non_loopback.is_empty() {
-            listen_addrs.iter().map(|a| a.to_string()).collect()
         } else {
-            non_loopback.iter().map(|a| a.to_string()).collect()
+            listen_addrs.iter().map(|a| a.to_string()).collect()
         };
         let peer_id_str = node.local_peer_id().to_string();
 
@@ -493,8 +485,34 @@ impl AppService {
         Ok(())
     }
 
+    /// Re-fetches this contact's presence from the directory whenever we
+    /// don't currently have a live connection to them — a peer's dialable
+    /// address is ephemeral session data (see `add_contact_by_user_id`'s
+    /// doc comment), not identity data, and it changes on *every* restart
+    /// of their app: `AppService::load_or_create_with` binds a fresh
+    /// ephemeral listen port every launch even though the PeerId itself
+    /// now persists. The previous version of this only ever refreshed once
+    /// — the very first time a contact was added — then trusted whatever
+    /// address was cached then for the rest of the process's lifetime,
+    /// even after the underlying connection dropped (e.g. because the
+    /// other side restarted): every send after that silently failed to
+    /// dial the now-stale address, with no automatic recovery short of
+    /// removing and re-adding the contact.
+    ///
+    /// Gating the refresh on connection state rather than doing it
+    /// unconditionally on every send matters, not just as an optimization:
+    /// an always-refresh version was tried and reliably broke
+    /// `full_app_service_flow_dm_then_group` — the extra directory
+    /// round-trip before `invite_to_group` could send its (already-fast)
+    /// group-key share was enough added latency to occasionally cross
+    /// libp2p's 10s default idle-connection timeout while nothing else was
+    /// using that connection, killing it out from under the gossipsub mesh
+    /// that had just formed. Refreshing only when we're not already
+    /// connected costs nothing on the common, already-connected path and
+    /// only pays the round-trip when we were about to need a fresh dial
+    /// anyway.
     async fn ensure_connected_contact(&mut self, user_id: &str) -> anyhow::Result<()> {
-        if !self.node.has_contact(user_id) {
+        if !self.node.has_contact(user_id) || !self.node.is_connected_to(user_id) {
             self.add_contact_by_user_id(user_id).await?;
         }
         Ok(())

@@ -134,3 +134,22 @@ input[type="range"] {
 .seal-ring-inner.is-connecting {
   animation: seal-spin-ccw 2.4s linear infinite;
 }
+
+/* In-app toast entrance — see `ToastStack.tsx`. A reliable, always-visible
+   stand-in for OS notifications, which macOS's dev-mode workaround
+   (impersonating Terminal.app's identity, since an unbundled `cargo run`
+   binary has no bundle of its own) can't be relied on to actually show,
+   depending on whether Terminal itself has notification permission. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.toast-enter {
+  animation: toast-in 0.22s ease-out;
+}

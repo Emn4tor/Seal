@@ -255,6 +255,18 @@ impl ChatNode {
         self.contacts.contains_key(user_id)
     }
 
+    /// Whether we currently have a live libp2p connection to this contact.
+    /// `false` for a contact we've never dialed yet, same as one whose
+    /// connection has since dropped (e.g. their app restarted, picking a
+    /// fresh ephemeral listen port — see `ensure_connected_contact`'s doc
+    /// comment) — either way, the cached `Contact::addrs` might no longer
+    /// be dialable and are worth refreshing before relying on them again.
+    pub fn is_connected_to(&self, user_id: &str) -> bool {
+        self.contacts
+            .get(user_id)
+            .is_some_and(|c| self.swarm.is_connected(&c.peer_id))
+    }
+
     /// Drops the in-memory transport contact (peer id, known addresses,
     /// Curve25519 key) — the Olm session, if any, is left alone in `olm`'s
     /// own manager rather than torn down here, since removing a contact

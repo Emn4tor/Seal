@@ -12,6 +12,8 @@ use account_manager::AccountManager;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 /// Filesystem locations resolved once at startup and needed before any
 /// backend is running. `shared_data_dir` is where `server.json` and
@@ -21,6 +23,54 @@ use tauri::{Manager, WindowEvent};
 /// is active isn't decided until after this is set up.
 pub struct AppPaths {
     pub shared_data_dir: PathBuf,
+}
+
+/// Sets up logging to both stdout and a daily-rotating file under
+/// `<app_data_dir>/logs/` — on by default at `info`, not only when
+/// `RUST_LOG` happens to be set. Debugging a real report used to mean
+/// asking someone to relaunch with `RUST_LOG=debug` and capture their
+/// terminal, which two `npm run tauri dev` windows at once (see
+/// `apps/desktop/scripts/tauri.mjs`) makes awkward — a file that's always
+/// being written means the logs from whatever just happened are already on
+/// disk. `RUST_LOG`, when set, still wins and applies to both outputs:
+/// `EnvFilter::try_from_default_env` only falls back to the `info` default
+/// when it's absent.
+fn init_logging(
+    shared_data_dir: &std::path::Path,
+) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let env_filter = || {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+    };
+
+    let log_dir = shared_data_dir.join("logs");
+    if std::fs::create_dir_all(&log_dir).is_err() {
+        // A logging setup problem shouldn't stop the app from starting —
+        // fall back to stdout only.
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(env_filter())
+            .try_init();
+        return None;
+    }
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "seal.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    let registered = tracing_subscriber::registry()
+        .with(env_filter())
+        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(non_blocking),
+        )
+        .try_init()
+        .is_ok();
+
+    if registered {
+        tracing::info!(log_dir = %log_dir.display(), "logging to files in this directory (rotated daily)");
+    }
+    Some(guard)
 }
 
 /// Shows and focuses the main window — used by the tray icon menu's "Open
@@ -36,10 +86,6 @@ fn show_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .try_init();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -55,6 +101,14 @@ pub fn run() {
             // doesn't create it. Nothing else is guaranteed to before the
             // first write (e.g. saving `server.json`), so do it here.
             std::fs::create_dir_all(&shared_data_dir)?;
+
+            // Leaked deliberately: the guard needs to outlive the whole
+            // process so buffered log lines actually get flushed to disk,
+            // and there's no natural owner for it once `setup` returns and
+            // `.build().run(...)` takes over.
+            if let Some(guard) = init_logging(&shared_data_dir) {
+                Box::leak(Box::new(guard));
+            }
 
             app.manage(AppPaths { shared_data_dir });
             app.manage(AccountManager::new());

@@ -378,6 +378,16 @@ that (including `bob` here) reuses it silently. Both windows end up on the
 same embedded directory server, so you can add each other as contacts by ID
 and message between them.
 
+Vite's dev server needs a real, fixed port for Tauri's webview to point at,
+which normally means only one `npm run tauri dev` can run at a time — the
+second one would find port 1420 already taken and fail outright.
+`npm run tauri` is actually a small wrapper (`apps/desktop/scripts/tauri.mjs`)
+that picks the next free port (1421, 1422, …) for every instance after the
+first and wires it through automatically, so running the two commands above
+in two terminals just works; you don't need to do anything differently. It
+only changes behavior for `dev` — `npm run tauri build` and everything else
+pass straight through to the real CLI.
+
 ### Testing against a real build (not dev mode)
 
 ```sh

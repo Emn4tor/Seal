@@ -4,5 +4,7 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>Seal needs microphone access so you can talk in voice channels.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Seal connects directly to your contacts' devices, including ones on your local network, instead of relaying messages through a server.</string>
 </dict>
 </plist>

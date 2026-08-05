@@ -15,10 +15,13 @@ import { Splash } from "./components/Splash";
 import { TutorialWizard } from "./components/TutorialWizard";
 import { CipherSeal, type SealStatus } from "./components/CipherSeal";
 import { VoiceCallPanel } from "./components/VoiceCallPanel";
+import { ToastStack, type ToastItem } from "./components/ToastStack";
 import { applyPushToTalk, getPttEnabled, getPttShortcut } from "./lib/pushToTalk";
 import { getAutostartEnabled, syncAutostart } from "./lib/autostart";
 import { ensureNotificationPermission, notifyNewMessage } from "./lib/notifications";
 import type { AccountSummary, ChannelKind } from "./lib/types";
+
+const TOAST_LIFETIME_MS = 6000;
 
 type OpenModal = "add-contact" | "create-group" | "invite" | "create-channel" | null;
 type Phase = "loading" | "boot-error" | "choose-server" | "onboarding" | "picker" | "ready";
@@ -65,6 +68,22 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  function dismissToast(id: string) {
+    setToasts((ts) => ts.filter((t) => t.id !== id));
+  }
+
+  // Fires the OS notification attempt (sound + native banner, when the
+  // platform actually delivers it) and always also shows an in-window
+  // toast — the one reliable path, since macOS in dev mode depends on
+  // Terminal.app's own notification permission (see `ToastStack.tsx`).
+  function notify(title: string, body: string, variant: ToastItem["variant"] = "message") {
+    notifyNewMessage(title, body);
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setToasts((ts) => [...ts, { id, title, body, variant }]);
+    setTimeout(() => dismissToast(id), TOAST_LIFETIME_MS);
+  }
 
   // Registered once for the app's whole lifetime, independent of login/boot
   // state — a real OS-level global shortcut (works no matter which app has
@@ -273,7 +292,7 @@ export default function App() {
           });
           if (!wasOpen) {
             const sender = useChatStore.getState().contacts.find((c) => c.user_id === event.from);
-            notifyNewMessage(
+            notify(
               sender?.display_name ?? event.from.slice(0, 12),
               event.body || (event.attachment ? "Sent an attachment" : ""),
             );
@@ -294,7 +313,7 @@ export default function App() {
             const sender = state.contacts.find((c) => c.user_id === event.from);
             const senderName = sender?.display_name ?? event.from.slice(0, 12);
             const bodyText = event.body || (event.attachment ? "Sent an attachment" : "");
-            notifyNewMessage(
+            notify(
               group ? (channel ? `${group.name} · #${channel.name}` : group.name) : "Group message",
               `${senderName}: ${bodyText}`,
             );
@@ -306,7 +325,7 @@ export default function App() {
             .getState()
             .contacts.find((c) => c.user_id === event.peer_user_id);
           const who = sender?.display_name ?? event.peer_user_id?.slice(0, 12) ?? "a peer";
-          notifyNewMessage("Message not delivered", `Couldn't reach ${who}. It hasn't been sent.`);
+          notify("Message not delivered", `Couldn't reach ${who}. It hasn't been sent.`, "error");
         }
       }),
       onGroupsUpdated(() => void refreshGroups()),
@@ -623,6 +642,7 @@ export default function App() {
         />
       )}
       {showTutorial && <TutorialWizard userId={userId} onClose={closeTutorial} />}
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

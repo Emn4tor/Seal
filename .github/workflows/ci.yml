@@ -66,6 +66,18 @@ jobs:
         run: |
           dbus-run-session -- bash -c '
             eval "$(echo -n "" | gnome-keyring-daemon --unlock --components=secrets)"
+            # `eval` above returns as soon as gnome-keyring-daemon has forked
+            # and printed its env vars, not once it has actually finished
+            # registering the secret-service D-Bus name — a real, if brief,
+            # startup race. It bit the `identity` crate'\''s own dedicated
+            # keychain test specifically because that test binary is small
+            # enough to start running within milliseconds of this step,
+            # before the daemon caught up (NoStorageAccess/NoResult) — every
+            # *other* crate touching the same keychain (p2p-core'\''s, much
+            # larger and slower to build) had plenty of incidental time to
+            # not hit it, which is why this looked inconsistent rather than
+            # totally broken.
+            sleep 2
             cargo test --workspace
           '
       # Platform-independent (an advisory-DB lookup against Cargo.lock), so

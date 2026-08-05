@@ -58,7 +58,26 @@ pub fn load_or_create_keypair(path: &Path) -> anyhow::Result<Keypair> {
 /// relayed connections are never written to disk, so there's nothing here
 /// for a seized/leaked copy of the *database* to contain — the tradeoff and
 /// its reasoning are in `todo.md`.
-pub async fn run_relay(keypair: Keypair, listen_addr: SocketAddr) -> anyhow::Result<()> {
+///
+/// `external_addr`, when given, is the same base address advertised via
+/// `/v1/relay-info` (`DIRECTORY_RELAY_EXTERNAL_MULTIADDR`) — e.g.
+/// `/dns4/seal.emn4tor.de/tcp/4001`. Telling clients about this address over
+/// HTTP was only half the story: the relay's own `relay::Behaviour` decides
+/// what to put in a RESERVE response's `addrs` field from the swarm's own
+/// *confirmed external addresses*, which is empty by default (all it
+/// otherwise knows is that it's listening on `0.0.0.0`, not a real
+/// candidate). Without registering this address on the swarm too, every
+/// reservation response comes back with no usable address in it at all, and
+/// the requesting client rejects it outright
+/// (`ReservationFailedReason::NoAddressesInReservation`) — the relay looked
+/// reachable (`listen_on` succeeds, clients can even open a connection to
+/// it) right up until the actual reservation, which failed identically to a
+/// genuinely unreachable relay from every angle a client can observe.
+pub async fn run_relay(
+    keypair: Keypair,
+    listen_addr: SocketAddr,
+    external_addr: Option<Multiaddr>,
+) -> anyhow::Result<()> {
     let local_peer_id = keypair.public().to_peer_id();
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
@@ -81,7 +100,16 @@ pub async fn run_relay(keypair: Keypair, listen_addr: SocketAddr) -> anyhow::Res
         .expect("SocketAddr always converts to a valid /ip4|ip6/.../tcp/... multiaddr");
     swarm.listen_on(multiaddr)?;
 
-    tracing::info!(%local_peer_id, %listen_addr, "relay listening");
+    if let Some(addr) = external_addr.clone() {
+        swarm.add_external_address(addr);
+    } else {
+        tracing::warn!(
+            "no external relay address configured — reservations will fail with \
+             NoAddressesInReservation; set DIRECTORY_RELAY_EXTERNAL_MULTIADDR"
+        );
+    }
+
+    tracing::info!(%local_peer_id, %listen_addr, ?external_addr, "relay listening");
 
     loop {
         // Nothing here needs the events themselves — `relay::Behaviour`

@@ -194,7 +194,6 @@ impl ChatNode {
         relay_addr: Multiaddr,
         timeout: std::time::Duration,
     ) -> anyhow::Result<Multiaddr> {
-        let local_peer_id = self.local_peer_id();
         let circuit_addr = relay_addr.with(Protocol::P2pCircuit);
         self.swarm.listen_on(circuit_addr)?;
 
@@ -207,7 +206,16 @@ impl ChatNode {
                         SwarmEvent::NewListenAddr { address, .. }
                             if address.iter().any(|p| matches!(p, Protocol::P2pCircuit)) =>
                         {
-                            return Ok(address.with(Protocol::P2p(local_peer_id)));
+                            // `address` here (as reported by the relay-client
+                            // transport) already ends in `/p2p/<local-peer-id>`
+                            // — appending it again produced a malformed
+                            // multiaddr (`.../p2p-circuit/p2p/<id>/p2p/<id>`)
+                            // that every dial through it then rejected with
+                            // `MalformedMultiaddr`. Confirmed by tracing the
+                            // raw event: reservations were succeeding, but
+                            // literally nobody could ever dial the address
+                            // this returned.
+                            return Ok(address);
                         }
                         SwarmEvent::ListenerClosed { addresses, reason: Err(e), .. }
                             if addresses.iter().any(|a| {

@@ -57,6 +57,20 @@ async fn main() -> anyhow::Result<()> {
 
     let relay_keypair = directory_server::relay::load_or_create_keypair(&relay_key_path)?;
     let relay_peer_id = relay_keypair.public().to_peer_id();
+    // Also handed to `run_relay` below, unparsed-of-peer-id, so the relay's
+    // own swarm knows this is a confirmed external address for itself — see
+    // that function's doc comment for why advertising it over HTTP alone
+    // isn't enough.
+    let relay_external_addr: Option<libp2p::Multiaddr> = relay_external_base
+        .as_deref()
+        .map(|base| {
+            base.parse().map_err(|e| {
+                anyhow::anyhow!(
+                    "DIRECTORY_RELAY_EXTERNAL_MULTIADDR {base:?} is not a valid multiaddr: {e}"
+                )
+            })
+        })
+        .transpose()?;
     let relay_info = relay_external_base.map(|base| RelayInfoResponse {
         peer_id: relay_peer_id.to_string(),
         multiaddr: format!("{base}/p2p/{relay_peer_id}"),
@@ -72,7 +86,13 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn({
         let relay_bind_addr = relay_bind_addr;
         async move {
-            if let Err(e) = directory_server::relay::run_relay(relay_keypair, relay_bind_addr).await {
+            if let Err(e) = directory_server::relay::run_relay(
+                relay_keypair,
+                relay_bind_addr,
+                relay_external_addr,
+            )
+            .await
+            {
                 tracing::error!(error = %e, "relay swarm exited");
             }
         }

@@ -18,6 +18,7 @@ libp2p = { version = "0.56", features = [
     "tokio",
     "tcp",
     "quic",
+    "dns",
     "noise",
     "yamux",
     "identify",

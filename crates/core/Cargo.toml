@@ -44,3 +44,4 @@ base64 = "0.22"
 directory-server = { path = "../directory-server" }
 axum = "0.8"
 tracing-subscriber = { workspace = true }
+serial_test = "3"

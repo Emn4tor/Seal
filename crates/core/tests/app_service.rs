@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use directory_server::{AppState, build_public_router};
 use p2p_core::{AppService, AttachmentPayload, ChatEvent};
+use serial_test::serial;
 
 /// Spawns a real directory-server on loopback and returns its base URL. The
 /// backing temp dir is intentionally leaked for the process's lifetime —
@@ -27,7 +28,22 @@ async fn spawn_directory_server() -> String {
 /// fresh presence-based dial, no hand-wired contacts), exchange an
 /// encrypted DM, and run a group invite + group message — with everything
 /// persisted to each side's local encrypted store along the way.
+///
+/// `#[serial]`, along with every other test in this file that creates a
+/// real `AppService`: each one resolves its OS-keychain KEK through
+/// `identity::Keychain`, and libtest runs every test function in this
+/// binary concurrently on its own thread by default. On Windows this was
+/// enough to occasionally corrupt a concurrently-written/read identity
+/// blob — `rename_persists_and_survives_resume` failed in CI with
+/// "decryption failed (wrong key or corrupted data)" despite the crypto
+/// code itself being correct (see `storage::crypto`'s own unit tests) and
+/// an *identical* create/drop/resume test right above it passing —
+/// pointing at a race in the underlying Windows Credential Manager
+/// backend under concurrent access, not a logic bug here. Serializing
+/// these tests relative to each other (not to the rest of the suite)
+/// removes that race entirely.
 #[tokio::test]
+#[serial]
 async fn full_app_service_flow_dm_then_group() {
     let directory_url = spawn_directory_server().await;
 
@@ -193,7 +209,10 @@ async fn full_app_service_flow_dm_then_group() {
 /// Regression test: re-loading an existing identity used to always use
 /// whatever `display_name` the caller passed in, silently renaming the
 /// account on every restart. The stored name must win instead.
+///
+/// `#[serial]`: see `full_app_service_flow_dm_then_group`'s doc comment.
 #[tokio::test]
+#[serial]
 async fn resuming_an_account_keeps_its_stored_name_not_the_caller_supplied_one() {
     let directory_url = spawn_directory_server().await;
     let dir = tempfile::tempdir().unwrap();
@@ -224,7 +243,10 @@ async fn resuming_an_account_keeps_its_stored_name_not_the_caller_supplied_one()
 
 /// A genuinely new account with no display name at all should fail clearly
 /// rather than e.g. registering with an empty name.
+///
+/// `#[serial]`: see `full_app_service_flow_dm_then_group`'s doc comment.
 #[tokio::test]
+#[serial]
 async fn creating_a_new_account_without_a_name_is_an_error() {
     let directory_url = spawn_directory_server().await;
     let dir = tempfile::tempdir().unwrap();
@@ -235,7 +257,11 @@ async fn creating_a_new_account_without_a_name_is_an_error() {
 
 /// `rename` is the one deliberate path a display name should change through:
 /// it must update what a later `load_or_create` resumes with.
+///
+/// `#[serial]`: see `full_app_service_flow_dm_then_group`'s doc comment —
+/// this is the specific test that surfaced the race.
 #[tokio::test]
+#[serial]
 async fn rename_persists_and_survives_resume() {
     let directory_url = spawn_directory_server().await;
     let dir = tempfile::tempdir().unwrap();

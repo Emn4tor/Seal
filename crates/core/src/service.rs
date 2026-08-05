@@ -115,6 +115,33 @@ impl Drop for HeartbeatGuard {
     }
 }
 
+/// Which side of a 1:1 call proposal we are — determines which incoming
+/// signaling messages are meaningful for it (an `Outgoing` call only cares
+/// about `CallAccept`/`CallDecline`; an `Incoming` one is waiting on the
+/// local user to call `accept_call`/`decline_call`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CallDirection {
+    Outgoing,
+    Incoming,
+}
+
+/// A 1:1 call that's been proposed but isn't connected yet — either we're
+/// ringing someone (`Outgoing`) or someone's ringing us and we haven't
+/// decided yet (`Incoming`). Distinct from `voice_call`, which only exists
+/// once audio is actually flowing; a call passes through here first for
+/// both directions.
+struct PendingCall {
+    call_id: String,
+    peer_user_id: String,
+    direction: CallDirection,
+    /// Captured at `call_contact` time (for `Outgoing`) so `handle_call_accepted`
+    /// can start audio with the same device preferences the frontend had
+    /// selected when the user initiated the call — unset for `Incoming`,
+    /// where the frontend only supplies these later, at `accept_call` time.
+    preferred_input: Option<String>,
+    preferred_output: Option<String>,
+}
+
 pub struct AppService {
     pub node: ChatNode,
     directory: DirectoryClient,
@@ -122,6 +149,7 @@ pub struct AppService {
     display_name: String,
     voice_call: Option<VoiceCallState>,
     voice_call_last_heartbeat: Option<std::time::Instant>,
+    pending_call: Option<PendingCall>,
     /// Who's currently announced as present in each voice channel, keyed by
     /// `channel_id` (globally unique, a UUID — no need to also key by
     /// `group_id`) — tracked for *every* channel we're subscribed to, not
@@ -402,6 +430,7 @@ impl AppService {
             display_name,
             voice_call: None,
             voice_call_last_heartbeat: None,
+            pending_call: None,
             voice_channel_presence: std::collections::HashMap::new(),
             _presence_heartbeat: HeartbeatGuard(heartbeat_handle),
         };
@@ -976,6 +1005,42 @@ impl AppService {
                     // variant's own doc comment — never surfaced to the
                     // frontend, loop around for the next real event.
                 }
+                ChatEvent::CallInvited { from, call_id } => {
+                    if let Some(translated) = self.handle_call_invited(from, call_id).await {
+                        return translated;
+                    }
+                    // Auto-declined (we were already busy) — not worth
+                    // surfacing, loop around for the next real event.
+                }
+                ChatEvent::CallAccepted { from, call_id } => {
+                    if let Some(translated) = self.handle_call_accepted(from, call_id).await {
+                        return translated;
+                    }
+                    // Didn't match our own outgoing call (stale/unrelated —
+                    // e.g. crossed paths with our own cancellation), ignore.
+                }
+                ChatEvent::CallDeclined { from, call_id } => {
+                    if let Some(translated) = self.handle_call_declined(from, call_id) {
+                        return translated;
+                    }
+                }
+                ChatEvent::CallEnded { from, call_id } => {
+                    if let Some(translated) = self.handle_call_ended(from, call_id) {
+                        return translated;
+                    }
+                }
+                ChatEvent::CallFailed {
+                    peer_user_id,
+                    call_id,
+                    reason,
+                } => {
+                    self.handle_call_failed(&call_id);
+                    return ChatEvent::CallFailed {
+                        peer_user_id,
+                        call_id,
+                        reason,
+                    };
+                }
                 other => return other,
             }
         }
@@ -1014,10 +1079,9 @@ impl AppService {
             }
         };
 
-        let relevant = self
-            .voice_call
-            .as_ref()
-            .is_some_and(|c| c.group_id == group_id && c.channel_id == channel_id);
+        let relevant = self.voice_call.as_ref().is_some_and(|c| {
+            matches!(&c.scope, voice::CallScope::Group { group_id: g, channel_id: ch } if g == &group_id && ch == &channel_id)
+        });
         if !relevant {
             return bookkeeping_changed.then(|| {
                 let user_ids = self
@@ -1117,8 +1181,10 @@ impl AppService {
         }
         let control = self.node.voice_control();
         let call = VoiceCallState::start(
-            group_id.to_string(),
-            channel_id.to_string(),
+            voice::CallScope::Group {
+                group_id: group_id.to_string(),
+                channel_id: channel_id.to_string(),
+            },
             control,
             preferred_input,
             preferred_output,
@@ -1143,9 +1209,11 @@ impl AppService {
         Ok(())
     }
 
-    /// Leaves whatever voice channel we're currently in: a no-op if we're
-    /// not in one. Announces our departure so other participants' UIs
-    /// update immediately rather than waiting for our heartbeat to lapse.
+    /// Leaves whatever voice call we're currently in — group or 1:1 — a
+    /// no-op if we're not in one. Announces our departure so the other
+    /// side(s) find out immediately rather than waiting for a heartbeat to
+    /// lapse (group) or never at all (1:1, which has no heartbeat — see
+    /// `maybe_send_voice_heartbeat`).
     pub fn leave_voice_channel(&mut self) -> anyhow::Result<()> {
         let Some(call) = self.voice_call.take() else {
             return Ok(());
@@ -1153,16 +1221,290 @@ impl AppService {
         // Local cleanup (dropping `call` above tears down audio I/O and
         // every open stream) already happened regardless of whether this
         // announce makes it out; a lost departure announcement just means
-        // other participants find out we're gone when our heartbeat lapses
-        // instead of immediately, not that we failed to leave.
-        if let Err(e) = self
-            .node
-            .send_voice_presence(&call.group_id, &call.channel_id, false)
-        {
-            tracing::warn!(error = %e, "failed to announce leaving the voice channel");
+        // the other side finds out we're gone late (group: next heartbeat
+        // lapse) or, for a 1:1 call, potentially not until they notice the
+        // connection itself dropped.
+        match &call.scope {
+            voice::CallScope::Group {
+                group_id,
+                channel_id,
+            } => {
+                if let Err(e) = self.node.send_voice_presence(group_id, channel_id, false) {
+                    tracing::warn!(error = %e, "failed to announce leaving the voice channel");
+                }
+            }
+            voice::CallScope::Direct {
+                peer_user_id,
+                call_id,
+            } => {
+                if let Err(e) = self.node.send_call_end(peer_user_id, call_id) {
+                    tracing::warn!(error = %e, "failed to announce ending a direct call");
+                }
+            }
         }
         self.voice_call_last_heartbeat = None;
         Ok(())
+    }
+
+    /// Calls `peer_user_id` 1:1 — sends a ring and returns the call id the
+    /// frontend should track (to show "Calling…" and let the user cancel
+    /// via `end_call`). The actual audio doesn't start until they accept;
+    /// see `ChatEvent::CallAccepted`. Fails outright if we're already
+    /// ringing or in any call (group or 1:1) — there's no call-waiting.
+    pub async fn call_contact(
+        &mut self,
+        peer_user_id: &str,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
+    ) -> anyhow::Result<String> {
+        if self.voice_call.is_some() || self.pending_call.is_some() {
+            anyhow::bail!("already in or starting a call");
+        }
+        self.ensure_connected_contact(peer_user_id).await?;
+        self.ensure_direct_session(peer_user_id).await?;
+        let call_id = uuid::Uuid::new_v4().to_string();
+        self.node.send_call_invite(peer_user_id, &call_id)?;
+        self.pending_call = Some(PendingCall {
+            call_id: call_id.clone(),
+            peer_user_id: peer_user_id.to_string(),
+            direction: CallDirection::Outgoing,
+            preferred_input,
+            preferred_output,
+        });
+        Ok(call_id)
+    }
+
+    /// Accepts a currently-ringing incoming call (`call_id` from the
+    /// `ChatEvent::CallInvited` the frontend is showing) and starts the
+    /// actual voice stream.
+    pub async fn accept_call(
+        &mut self,
+        call_id: &str,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
+    ) -> anyhow::Result<()> {
+        let matches = self
+            .pending_call
+            .as_ref()
+            .is_some_and(|p| p.call_id == call_id && p.direction == CallDirection::Incoming);
+        if !matches {
+            anyhow::bail!("no incoming call with id {call_id} to accept");
+        }
+        let pending = self
+            .pending_call
+            .take()
+            .expect("just checked is_some_and above");
+        if let Err(e) = self.node.send_call_accept(&pending.peer_user_id, call_id) {
+            self.pending_call = Some(pending); // put it back so the caller can retry
+            return Err(e);
+        }
+        self.start_direct_call(
+            &pending.peer_user_id,
+            call_id,
+            preferred_input,
+            preferred_output,
+        )
+        .await
+    }
+
+    /// Rejects a currently-ringing incoming call.
+    pub fn decline_call(&mut self, call_id: &str) -> anyhow::Result<()> {
+        let matches = self
+            .pending_call
+            .as_ref()
+            .is_some_and(|p| p.call_id == call_id && p.direction == CallDirection::Incoming);
+        if !matches {
+            anyhow::bail!("no incoming call with id {call_id} to decline");
+        }
+        let pending = self
+            .pending_call
+            .take()
+            .expect("just checked is_some_and above");
+        self.node.send_call_decline(&pending.peer_user_id, call_id)
+    }
+
+    /// Ends a 1:1 call in any state: cancels one still ringing (either
+    /// direction we initiated ourselves — declining an incoming call the
+    /// user hasn't decided on yet is `decline_call`'s job, not this) or
+    /// hangs up one already connected (delegating to `leave_voice_channel`,
+    /// which already knows how to sign off a `Direct` call). A no-op if
+    /// `call_id` doesn't match anything current — e.g. it already ended on
+    /// the other side and the frontend hasn't caught up yet.
+    pub fn end_call(&mut self, call_id: &str) -> anyhow::Result<()> {
+        if let Some(pending) = &self.pending_call
+            && pending.call_id == call_id
+        {
+            let peer_user_id = pending.peer_user_id.clone();
+            self.pending_call = None;
+            return self.node.send_call_end(&peer_user_id, call_id);
+        }
+        if self.voice_call.as_ref().is_some_and(
+            |c| matches!(&c.scope, voice::CallScope::Direct { call_id: id, .. } if id == call_id),
+        ) {
+            return self.leave_voice_channel();
+        }
+        Ok(())
+    }
+
+    /// Shared by `accept_call` (the callee's side) and `handle_call_accepted`
+    /// (the caller's side, once the callee's acceptance arrives) — starts
+    /// local audio I/O and dials the peer's voice stream directly, no
+    /// group/gossipsub presence involved at all.
+    async fn start_direct_call(
+        &mut self,
+        peer_user_id: &str,
+        call_id: &str,
+        preferred_input: Option<String>,
+        preferred_output: Option<String>,
+    ) -> anyhow::Result<()> {
+        if self.voice_call.is_some() {
+            self.leave_voice_channel()?;
+        }
+        let control = self.node.voice_control();
+        let call = VoiceCallState::start(
+            voice::CallScope::Direct {
+                peer_user_id: peer_user_id.to_string(),
+                call_id: call_id.to_string(),
+            },
+            control,
+            preferred_input,
+            preferred_output,
+        )
+        .await?;
+        // Unlike a group call — where `participants` is populated purely by
+        // `VoicePresence` gossip arriving over time — a direct call has
+        // exactly one possible participant and we already know who: no
+        // gossip round-trip needed, and none is coming (`CallScope::Direct`
+        // never publishes `VoicePresence`). Mark them present immediately
+        // rather than leaving `participants` empty until some other signal
+        // populates it, which for a direct call would be never.
+        call.note_presence(peer_user_id, true);
+        self.voice_call = Some(call);
+        self.connect_voice_peer(peer_user_id).await?;
+        Ok(())
+    }
+
+    /// Reacts to an incoming `CallInvite`: auto-declines if we're already
+    /// busy (ringing or in a call — no call-waiting), otherwise self-heals
+    /// the caller into a known contact (same reasoning as `DirectMessage`'s
+    /// self-heal in `next_event` — a call, like a message, can arrive from
+    /// someone we've never looked up before) and starts ringing.
+    async fn handle_call_invited(&mut self, from: String, call_id: String) -> Option<ChatEvent> {
+        if self.voice_call.is_some() || self.pending_call.is_some() {
+            if let Err(e) = self.node.send_call_decline(&from, &call_id) {
+                tracing::warn!(error = %e, %from, "failed to auto-decline an incoming call while busy");
+            }
+            return None;
+        }
+        if !self.node.has_contact(&from)
+            && let Err(e) = self.add_contact_by_user_id(&from.clone()).await
+        {
+            tracing::warn!(error = %e, %from, "failed to look up an unknown caller");
+        }
+        self.pending_call = Some(PendingCall {
+            call_id: call_id.clone(),
+            peer_user_id: from.clone(),
+            direction: CallDirection::Incoming,
+            preferred_input: None,
+            preferred_output: None,
+        });
+        Some(ChatEvent::CallInvited { from, call_id })
+    }
+
+    /// Reacts to the callee accepting our outgoing call: starts the actual
+    /// voice stream using the device preferences captured back when we
+    /// first called them (`call_contact`). Ignored if it doesn't match a
+    /// call we're actually currently ringing (a race with our own
+    /// cancellation, or a stale/replayed message).
+    async fn handle_call_accepted(&mut self, from: String, call_id: String) -> Option<ChatEvent> {
+        let matches = self.pending_call.as_ref().is_some_and(|p| {
+            p.call_id == call_id && p.peer_user_id == from && p.direction == CallDirection::Outgoing
+        });
+        if !matches {
+            return None;
+        }
+        let pending = self
+            .pending_call
+            .take()
+            .expect("just checked is_some_and above");
+        if let Err(e) = self
+            .start_direct_call(
+                &from,
+                &call_id,
+                pending.preferred_input,
+                pending.preferred_output,
+            )
+            .await
+        {
+            tracing::warn!(error = %e, %from, "failed to start the voice stream after the callee accepted");
+            let _ = self.node.send_call_end(&from, &call_id);
+            return Some(ChatEvent::CallEnded { from, call_id });
+        }
+        Some(ChatEvent::CallAccepted { from, call_id })
+    }
+
+    /// Reacts to the callee declining our outgoing call. Ignored (`None`)
+    /// if it doesn't match what we're actually ringing.
+    fn handle_call_declined(&mut self, from: String, call_id: String) -> Option<ChatEvent> {
+        let matches = self
+            .pending_call
+            .as_ref()
+            .is_some_and(|p| p.call_id == call_id && p.peer_user_id == from);
+        if !matches {
+            return None;
+        }
+        self.pending_call = None;
+        Some(ChatEvent::CallDeclined { from, call_id })
+    }
+
+    /// Reacts to the other side ending a call — cancelling one still
+    /// ringing or hanging up one already connected. Tears down whichever
+    /// local state (`pending_call` or `voice_call`) actually matches;
+    /// ignored (`None`) if neither does (e.g. we already hung up ourselves
+    /// and this crossed paths with our own `CallEnd`).
+    fn handle_call_ended(&mut self, from: String, call_id: String) -> Option<ChatEvent> {
+        let was_pending = self
+            .pending_call
+            .as_ref()
+            .is_some_and(|p| p.call_id == call_id && p.peer_user_id == from);
+        if was_pending {
+            self.pending_call = None;
+        }
+        let was_active = self.voice_call.as_ref().is_some_and(|c| {
+            matches!(&c.scope, voice::CallScope::Direct { peer_user_id, call_id: id } if peer_user_id == &from && id == &call_id)
+        });
+        if was_active {
+            self.voice_call = None;
+            self.voice_call_last_heartbeat = None;
+        }
+        (was_pending || was_active).then_some(ChatEvent::CallEnded { from, call_id })
+    }
+
+    /// Reacts to our own `CallInvite`/`CallAccept` failing to reach the
+    /// peer (see `ChatNode::pending_call_sends`) — most commonly because
+    /// their last-known address is stale and they're not actually online
+    /// right now. Tears down whatever local state was already started for
+    /// `call_id`: a still-ringing `pending_call` (the common case — our
+    /// `CallInvite` never got out), or — if this was a failed
+    /// `CallAccept` — the `voice_call` `start_direct_call` had already
+    /// spun up locally before the failure could be known (`accept_call`
+    /// starts audio right after queuing the send, not after it's confirmed
+    /// delivered). A no-op if neither matches (we already ended this call
+    /// ourselves and this crossed paths with the failure).
+    fn handle_call_failed(&mut self, call_id: &str) {
+        if self
+            .pending_call
+            .as_ref()
+            .is_some_and(|p| p.call_id == call_id)
+        {
+            self.pending_call = None;
+        }
+        if self.voice_call.as_ref().is_some_and(
+            |c| matches!(&c.scope, voice::CallScope::Direct { call_id: id, .. } if id == call_id),
+        ) {
+            self.voice_call = None;
+            self.voice_call_last_heartbeat = None;
+        }
     }
 
     pub fn set_voice_changer_enabled(&self, enabled: bool) {
@@ -1244,6 +1586,18 @@ impl AppService {
         let Some(call) = self.voice_call.as_ref() else {
             return;
         };
+        // Only a group call needs this: it's how a group member who joins
+        // the channel after we did discovers we're already there (no
+        // replay on gossipsub). A 1:1 call has no presence topic at all —
+        // we're either directly connected to the one other participant or
+        // the call is over, nothing to periodically re-announce.
+        let voice::CallScope::Group {
+            group_id,
+            channel_id,
+        } = &call.scope
+        else {
+            return;
+        };
         let due = self
             .voice_call_last_heartbeat
             .is_none_or(|last| last.elapsed() >= voice::PRESENCE_HEARTBEAT);
@@ -1256,10 +1610,7 @@ impl AppService {
         // wait out a full heartbeat interval, otherwise a slow-forming
         // mesh could mean only one or two real attempts in a given window
         // instead of fast retries until it's ready.
-        match self
-            .node
-            .send_voice_presence(&call.group_id, &call.channel_id, true)
-        {
+        match self.node.send_voice_presence(group_id, channel_id, true) {
             Ok(()) => self.voice_call_last_heartbeat = Some(std::time::Instant::now()),
             Err(e) => {
                 tracing::warn!(error = %e, "failed to send voice presence heartbeat, will retry")

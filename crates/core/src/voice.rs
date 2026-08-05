@@ -27,7 +27,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use audio::adpcm::{
     BYTES_PER_FRAME, Decoder as AdpcmDecoder, Encoder as AdpcmEncoder, SAMPLES_PER_FRAME,
@@ -86,11 +86,27 @@ fn dbfs(samples: &[f32]) -> f32 {
     20.0 * mean_sq.sqrt().max(1e-9).log10()
 }
 
+/// What kind of call this is — determines how presence/teardown signaling
+/// works, since a 1:1 call has no group/gossipsub topic to announce on.
+/// The actual audio plumbing below (`VoiceCallState`) doesn't care which
+/// kind it is: mesh dialing, encode/mix loops, and stream I/O are identical
+/// either way (a 1:1 call is just a "mesh" of one other participant).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallScope {
+    Group {
+        group_id: String,
+        channel_id: String,
+    },
+    Direct {
+        peer_user_id: String,
+        call_id: String,
+    },
+}
+
 /// One active voice call: owns local audio I/O and every open peer stream.
 /// Dropping this tears the whole thing down: that's the "leave" mechanism.
 pub struct VoiceCallState {
-    pub group_id: String,
-    pub channel_id: String,
+    pub scope: CallScope,
     control: Control,
     muted: Arc<AtomicBool>,
     changer_enabled: Arc<AtomicBool>,
@@ -305,8 +321,7 @@ impl VoiceCallState {
     /// `VoicePresence { joined: true }` announcement and feeds subsequent
     /// presence events in via [`Self::note_presence`].
     pub async fn start(
-        group_id: String,
-        channel_id: String,
+        scope: CallScope,
         control: Control,
         preferred_input: Option<String>,
         preferred_output: Option<String>,
@@ -315,15 +330,6 @@ impl VoiceCallState {
 
         let (mic_tx, mic_rx) = rtrb::RingBuffer::<f32>::new(RING_BUFFER_CAPACITY);
         let (speaker_tx, speaker_rx) = rtrb::RingBuffer::<f32>::new(RING_BUFFER_CAPACITY);
-
-        let (input_rate, output_rate) = spawn_audio_io_thread(
-            mic_tx,
-            speaker_rx,
-            running.clone(),
-            preferred_input,
-            preferred_output,
-        )
-        .await;
 
         let muted = Arc::new(AtomicBool::new(false));
         let changer_enabled = Arc::new(AtomicBool::new(false));
@@ -352,33 +358,22 @@ impl VoiceCallState {
 
         let mut tasks = Vec::new();
 
-        tasks.push(tokio::spawn(run_encode_loop(
-            mic_rx,
-            input_rate,
-            muted.clone(),
-            changer_enabled.clone(),
-            hear_self.clone(),
-            mic_threshold_db.clone(),
-            local_speaking.clone(),
-            outbound.clone(),
-            jitter.clone(),
-            self_monitor_id,
-            running.clone(),
-        )));
-
-        tasks.push(tokio::spawn(run_send_pacer_loop(
-            outbound.clone(),
-            writers.clone(),
-            running.clone(),
-        )));
-
-        tasks.push(tokio::spawn(run_mixer_loop(
-            jitter.clone(),
-            speaker_tx,
-            output_rate,
-            running.clone(),
-        )));
-
+        // Registering the inbound-stream acceptor happens *before* awaiting
+        // real audio I/O setup below, deliberately: a group call's mesh
+        // dial is self-healing (a heartbeat re-announces every 5s, so a
+        // dial that raced ahead of the peer's own acceptor just succeeds on
+        // the next attempt), but a 1:1 call dials exactly once, right after
+        // the callee accepts — on both sides, roughly simultaneously. If
+        // this acceptor registration waited on `spawn_audio_io_thread`
+        // below (real `cpal` device enumeration and stream construction,
+        // which "can occasionally take a while" per that function's own
+        // doc comment) the way it used to, the *other* side's one-shot
+        // dial could easily arrive and fail negotiation before this side
+        // was even listening yet — with nothing to retry it, that's a
+        // permanently silent, un-connected call. Registering this first
+        // costs nothing (it doesn't depend on `input_rate`/`output_rate`,
+        // only on state that's already initialized above) and closes the
+        // window entirely for the case that actually needs it.
         {
             let mut acceptor_control = control.clone();
             let jitter = jitter.clone();
@@ -415,9 +410,44 @@ impl VoiceCallState {
             }));
         }
 
+        let (input_rate, output_rate) = spawn_audio_io_thread(
+            mic_tx,
+            speaker_rx,
+            running.clone(),
+            preferred_input,
+            preferred_output,
+        )
+        .await;
+
+        tasks.push(tokio::spawn(run_encode_loop(
+            mic_rx,
+            input_rate,
+            muted.clone(),
+            changer_enabled.clone(),
+            hear_self.clone(),
+            mic_threshold_db.clone(),
+            local_speaking.clone(),
+            outbound.clone(),
+            jitter.clone(),
+            self_monitor_id,
+            running.clone(),
+        )));
+
+        tasks.push(tokio::spawn(run_send_pacer_loop(
+            outbound.clone(),
+            writers.clone(),
+            running.clone(),
+        )));
+
+        tasks.push(tokio::spawn(run_mixer_loop(
+            jitter.clone(),
+            speaker_tx,
+            output_rate,
+            running.clone(),
+        )));
+
         Ok(Self {
-            group_id,
-            channel_id,
+            scope,
             control,
             muted,
             changer_enabled,
@@ -568,23 +598,57 @@ impl VoiceCallState {
         let connection_user_ids = self.connection_user_ids.clone();
         let connection_last_frame_at = self.connection_last_frame_at.clone();
         let next_connection_id = self.next_connection_id.clone();
+        let connected_peers = self.connected_peers.clone();
         tokio::spawn(async move {
-            match net::open_voice_stream(&mut control, peer_id).await {
-                Ok(stream) => {
-                    register_connection(
-                        stream,
-                        Some(user_id),
-                        &jitter,
-                        &writers,
-                        &connection_user_ids,
-                        &connection_last_frame_at,
-                        &next_connection_id,
-                    )
-                    .await
+            // `connected_peers` is marked *before* the dial (above) so two
+            // concurrent calls to this fn can't both attempt one, so a dial
+            // that never succeeds has to be retried here rather than left to
+            // a caller who thinks it's already handled. A direct call has
+            // exactly one shot at this (no heartbeat-driven retry the way
+            // group calls get from `AppService::maybe_send_voice_heartbeat`
+            // re-invoking `connect_voice_peer`), and the very first attempt
+            // can race the remote side still registering its
+            // `net::accept_voice_streams` acceptor, so a bare first-try
+            // failure isn't necessarily permanent.
+            const MAX_ATTEMPTS: u32 = 4;
+            const RETRY_DELAY: Duration = Duration::from_millis(500);
+            let mut last_err = None;
+            for attempt in 1..=MAX_ATTEMPTS {
+                match net::open_voice_stream(&mut control, peer_id).await {
+                    Ok(stream) => {
+                        register_connection(
+                            stream,
+                            Some(user_id),
+                            &jitter,
+                            &writers,
+                            &connection_user_ids,
+                            &connection_last_frame_at,
+                            &next_connection_id,
+                        )
+                        .await;
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            %peer_id,
+                            attempt,
+                            max_attempts = MAX_ATTEMPTS,
+                            "failed to open a voice stream to a participant"
+                        );
+                        last_err = Some(e);
+                        if attempt < MAX_ATTEMPTS {
+                            tokio::time::sleep(RETRY_DELAY).await;
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, %peer_id, "failed to open a voice stream to a participant")
-                }
+            }
+            // Every attempt failed: undo the earlier reservation so a later
+            // call (another heartbeat tick, a fresh direct-call attempt)
+            // isn't permanently blocked from ever retrying this peer.
+            connected_peers.lock().unwrap().remove(&peer_id);
+            if let Some(e) = last_err {
+                tracing::error!(error = %e, %peer_id, "giving up on connecting to voice participant");
             }
         });
     }

@@ -64,6 +64,12 @@ export const api = {
     preferredOutput: string | null,
   ) => invoke<void>("join_voice_channel", { groupId, channelId, preferredInput, preferredOutput }),
   leaveVoiceChannel: () => invoke<void>("leave_voice_channel"),
+  callContact: (peerUserId: string, preferredInput: string | null, preferredOutput: string | null) =>
+    invoke<string>("call_contact", { peerUserId, preferredInput, preferredOutput }),
+  acceptCall: (callId: string, preferredInput: string | null, preferredOutput: string | null) =>
+    invoke<void>("accept_call", { callId, preferredInput, preferredOutput }),
+  declineCall: (callId: string) => invoke<void>("decline_call", { callId }),
+  endCall: (callId: string) => invoke<void>("end_call", { callId }),
   listInputDevices: () => invoke<string[]>("list_input_devices"),
   listOutputDevices: () => invoke<string[]>("list_output_devices"),
   setVoiceChangerEnabled: (enabled: boolean) =>

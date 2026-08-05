@@ -4,8 +4,8 @@ use identity::Identity;
 use reqwest::{Client, StatusCode};
 use wire_proto::{
     ChannelKind, ChannelRecord, ClaimedOtk, CreateChannelRequest, CreateGroupRequest, GroupRecord,
-    OneTimeKeyEntry, PresenceRecord, PresenceUpdateRequest, RegisterUserRequest,
-    RelayInfoResponse, RosterUpdateRequest, UploadOtkRequest, UserRecord,
+    OneTimeKeyEntry, PresenceRecord, PresenceUpdateRequest, RegisterUserRequest, RelayInfoResponse,
+    RosterUpdateRequest, UploadOtkRequest, UserRecord,
 };
 
 use crate::error::NetError;

@@ -27,6 +27,7 @@ import { getRingtoneId } from "./lib/ringtoneSettings";
 import { type RingtoneHandle, startCallingSound, startRingtone } from "./lib/ringtones";
 import type { AccountSummary, ChannelKind } from "./lib/types";
 import { checkForUpdates, update } from "./lib/updater";
+import { getUpdateAutoCheckEnabled, getUpdateAutoInstallEnabled } from "./lib/updaterSettings";
 
 const TOAST_LIFETIME_MS = 6000;
 
@@ -184,15 +185,23 @@ export default function App() {
     try {
       let updateAvailable = await checkForUpdates();
       if (updateAvailable) {
-        setOpenModal("update-available");
+        if (getUpdateAutoInstallEnabled()) {
+          notify("Update", "Downloading and installing updates.")
+          await update();
+          return;
+        } else {
+          setOpenModal("update-available");
+        }
       }
     } catch (e) {
-      console.error("Error while checking for updates:", e);
+      notify("Update Checking Failed", "Update endpoint did not respond with a successful status code.", {variant:"error"})
     }
   }
 
   useEffect(() => {
-    checkUpdates()
+    if (getUpdateAutoCheckEnabled()) {
+      checkUpdates()
+    }
   }, [])
 
   async function finishBootWithAccount(account: AccountSummary, isNewAccount: boolean) {
@@ -906,6 +915,7 @@ export default function App() {
           onAddAnotherAccount={() => startAddAccount("ready")}
           onRemoveCurrentAccount={handleRemoveCurrentAccount}
           setOpenModal={setOpenModal}
+          notify={notify}
         />
       )}
       {showTutorial && <TutorialWizard userId={userId} onClose={closeTutorial} />}

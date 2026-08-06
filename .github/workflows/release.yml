@@ -60,7 +60,7 @@ jobs:
         with:
           projectPath: ./apps/desktop
           tagName: 'v__VERSION__'
-          realeaseName: 'Draft'
+          releaseName: '__VERSION__'
           args: ${{ matrix.args }}
           releaseDraft: true
           prerelease: false

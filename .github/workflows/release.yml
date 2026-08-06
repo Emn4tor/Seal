@@ -22,13 +22,13 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: lts/*
           cache: 'npm'
@@ -68,18 +68,6 @@ jobs:
           # can't be opened" — not actually damaged, just unnotarized. This
           # note is the workaround until the project has real Apple
           # signing; see docs/RELEASING.md for the full explanation.
-          releaseBody: |
-            ## macOS: "Seal is damaged and can't be opened"
-
-            This build isn't notarized by Apple, so Gatekeeper blocks it after
-            downloading. It isn't actually damaged, just unsigned. To run it,
-            either:
-
-            - Open **System Settings > Privacy & Security**, scroll down to the
-              blocked-app notice, and click **Open Anyway**, or
-            - Run this in Terminal once it's installed: `xattr -cr /Applications/Seal.app`
-
-            This only affects macOS; the Linux and Windows builds aren't affected.
           args: ${{ matrix.args }}
           releaseDraft: true
           prerelease: false

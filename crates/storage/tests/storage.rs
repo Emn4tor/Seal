@@ -89,6 +89,15 @@ impl Drop for TestKeychainGuard {
     }
 }
 
+// Ignored on Linux CI: touches a real `identity::Keychain`, which needs a
+// D-Bus Secret Service that a headless CI runner doesn't reliably have —
+// see `crates/core/tests/actor_parity_harness.rs`'s identical comment for
+// the full story (gnome-keyring-daemon was tried and proved unreliable).
+// Real coverage still runs on macOS/Windows.
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs a real D-Bus Secret Service, not reliably available on headless CI — see this comment"
+)]
 #[test]
 fn panic_purge_deletes_db_files_and_crypto_shreds_the_kek() {
     let dir = tempfile::tempdir().unwrap();

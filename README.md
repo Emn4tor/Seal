@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://github.com/Emn4tor/Seal">
-    <img src="docs/assets/logo.png" width="112" height="112" alt="Seal logo — concentric brass and verdigris rings on an ink background" />
+    <img src="docs/assets/logo.png" width="112" height="112" alt="Seal logo" />
   </a>
 
   <h1>Seal</h1>
@@ -23,6 +23,10 @@
     <a href="https://github.com/Emn4tor/Seal/issues"><img src="https://img.shields.io/github/issues/Emn4tor/Seal?style=flat-square&color=c9a15c&labelColor=0e1116" alt="GitHub issues" /></a>
     <a href="https://github.com/Emn4tor/Seal/commits"><img src="https://img.shields.io/github/last-commit/Emn4tor/Seal?style=flat-square&color=4f8f86&labelColor=0e1116" alt="GitHub last commit" /></a>
     <a href="https://github.com/Emn4tor/Seal"><img src="https://img.shields.io/github/repo-size/Emn4tor/Seal?style=flat-square&color=c9a15c&labelColor=0e1116" alt="GitHub repo size" /></a>
+  </p>
+  <p>
+    <a href="https://github.com/Emn4tor/Seal/graphs/contributors"><img src="https://img.shields.io/github/contributors/Emn4tor/Seal?style=for-the-badge&color=c9a15c&labelColor=0e1116" alt="Contributors" /></a>
+    <a href="https://github.com/Emn4tor/Seal/commits"><img src="https://img.shields.io/github/commit-activity/t/Emn4tor/Seal?style=for-the-badge&color=4f8f86&labelColor=0e1116" alt="Total commits" /></a>
   </p>
 </div>
 

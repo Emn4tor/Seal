@@ -4,14 +4,11 @@
 //! size and it will emit output as full analysis hops become available.
 //!
 //! This is the direct spectral-bin-remapping style of phase-vocoder pitch
-//! shift (STFT -> remap each bin's energy and instantaneous frequency to
-//! `bin * ratio`, keeping the same hop on analysis and synthesis so
-//! duration is unchanged -> ISTFT), the same family of technique described
-//! in Bernsee's widely-cited "pitch shifting using the Fourier transform"
-//! writeup. It is a deliberately simple, well-understood approach — not a
-//! rigorous voice-anonymization tool. Large shifts or sibilant/noisy
-//! speech will show real "phasiness"/robotic artifacts; that's an honest
-//! property of this technique, not a bug to chase out.
+//! shift (STFT -> remap each bin to `bin * ratio` -> ISTFT), the technique
+//! described in Bernsee's widely-cited "pitch shifting using the Fourier
+//! transform" writeup. Deliberately simple, not a rigorous voice-
+//! anonymization tool: large shifts or noisy speech show real "phasiness"
+//! artifacts, an honest property of this technique, not a bug to chase.
 
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};

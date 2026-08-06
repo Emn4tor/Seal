@@ -48,7 +48,7 @@ export function CreateChannelModal({ initialKind, onSubmit, onClose }: CreateCha
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. announcements"
+            placeholder="e.g. secret-plans"
             className="w-full rounded-md border border-border bg-ink px-3 py-2 text-sm text-text transition-colors placeholder:text-text-faint focus:border-brass focus:outline-none"
           />
 

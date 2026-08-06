@@ -8,18 +8,15 @@ use p2p_core::{CallScope, ChatNode, VoiceCallState};
 
 /// Two real `ChatNode`s, connected over loopback TCP, each start a
 /// `VoiceCallState` for the same channel and one dials the other's raw
-/// voice stream via real `libp2p-stream` negotiation — independent of any
-/// real audio hardware (audio I/O gracefully degrades to a no-op on a
-/// machine/test-runner with no usable mic/speaker; see
-/// `spawn_audio_io_thread`). Presence bookkeeping is exercised as pure
-/// local state, since gossip-driven discovery lives one layer up in
-/// `AppService`.
+/// voice stream via real `libp2p-stream` negotiation — independent of
+/// real audio hardware (see `spawn_audio_io_thread`). Presence
+/// bookkeeping is exercised as pure local state; gossip-driven discovery
+/// lives one layer up in `AppService`.
 // Ignored by default: `VoiceCallState::start` opens the real default
-// mic/speaker as a side effect of exercising the network/presence logic
-// this test actually cares about (it works fine either way — audio I/O
-// degrades gracefully with no device/permission — but silently engaging
-// someone's microphone on a routine `cargo test --workspace` run is a
-// surprise this project shouldn't spring on anyone). Run explicitly with
+// mic/speaker as a side effect (works fine either way — audio I/O
+// degrades gracefully with no device — but silently engaging someone's
+// microphone on a routine `cargo test --workspace` run is a surprise
+// this project shouldn't spring on anyone). Run explicitly with
 // `cargo test -- --ignored`.
 #[tokio::test]
 #[ignore = "opens the real default mic/speaker; run explicitly with `cargo test -- --ignored`"]

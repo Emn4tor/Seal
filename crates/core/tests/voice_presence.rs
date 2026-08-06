@@ -21,27 +21,18 @@ async fn spawn_directory_server() -> String {
 }
 
 /// The voice-channel counterpart to `app_service.rs`'s full DM/group flow
-/// test: two real `AppService`s, a real directory server, a real group with
-/// a voice channel, both members join it, and each must discover the other
-/// purely through `GroupPayload::VoicePresence` broadcast over real
-/// gossipsub — resolving the announcer's address via the directory and
-/// opening a real `libp2p-stream` to them (audio I/O itself gracefully
-/// degrades with no device, so this doesn't need real hardware; see
-/// `voice::spawn_audio_io_thread`).
-// Ignored by default for two reasons: like `voice.rs`'s test, both
-// `join_voice_channel` calls open the real default mic/speaker as a side
-// effect of exercising the network/presence logic this test actually cares
-// about (audio I/O degrades gracefully with no device/permission); and this
-// specific test has a real residual timing sensitivity under load — with
-// two complete, real voice-call pipelines (audio I/O threads, DSP loops,
-// gossipsub, Megolm, and libp2p-stream negotiation) all running in one
-// process, occasional runs still time out even after fixing every root
-// cause found along the way (a genuine `Control::open_stream` deadlock —
-// see `VoiceCallState::spawn_ensure_connected` — and a heartbeat-retry gap
-// where nothing re-triggered it during quiet stretches). Every one of
-// dozens of passing runs traced cleanly through the full pipeline with no
-// errors, so this is disclosed as test-harness timing flakiness under
-// heavy concurrent real I/O, not a known logic bug. Run explicitly with
+/// test: two real `AppService`s, a real directory server, a real group
+/// with a voice channel, and each member discovers the other purely
+/// through `GroupPayload::VoicePresence` over real gossipsub (audio I/O
+/// itself degrades gracefully with no device, so no real hardware is
+/// needed).
+// Ignored by default: `join_voice_channel` opens the real default
+// mic/speaker as a side effect, and this test has a real residual timing
+// sensitivity under load with two full voice-call pipelines running in
+// one process — every root cause found along the way got fixed (a
+// `Control::open_stream` deadlock, a heartbeat-retry gap), and dozens of
+// passing runs traced cleanly with no errors, so this is disclosed as
+// harness timing flakiness, not a known logic bug. Run explicitly with
 // `cargo test -- --ignored`.
 #[tokio::test]
 #[ignore = "opens the real default mic/speaker and has residual timing flakiness under load; run explicitly with `cargo test -- --ignored`"]

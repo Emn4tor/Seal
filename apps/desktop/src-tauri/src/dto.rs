@@ -313,18 +313,14 @@ impl TryFrom<p2p_core::ChatEvent> for ChatEventDto {
                 reason,
             }),
             // Connection/gossip-subscription events aren't surfaced to the
-            // frontend yet — nothing there uses them. Raw `VoicePresence`
-            // is always intercepted by `AppService::next_event` itself
-            // (translated into `VoiceParticipantsChanged` above, or
-            // swallowed if irrelevant) — it should never reach here.
-            // `GroupChannelsChanged` likewise has no frontend-visible shape
-            // of its own — its only effect is the `groups-updated` Tauri
-            // event the actor already emits for it, which is what actually
-            // gets the frontend to refetch (see `actor.rs`).
-            // `GroupKeyRequested` is a purely internal protocol handshake
-            // (see its own doc comment) — `AppService::next_event` handles
-            // it and never returns it, so this arm should be unreachable
-            // in practice, but it still has to exist for exhaustiveness.
+            // frontend yet. Raw `VoicePresence` is always intercepted by
+            // `AppService::next_event` (translated into
+            // `VoiceParticipantsChanged`, or swallowed if irrelevant).
+            // `GroupChannelsChanged` has no frontend shape of its own —
+            // the actor's `groups-updated` Tauri event does the real work.
+            // `GroupKeyRequested` is an internal protocol handshake that
+            // `next_event` handles and never returns, so this arm is
+            // unreachable in practice but still needed for exhaustiveness.
             p2p_core::ChatEvent::Connected(_)
             | p2p_core::ChatEvent::GossipSubscribed { .. }
             | p2p_core::ChatEvent::VoicePresence { .. }

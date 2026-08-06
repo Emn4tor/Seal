@@ -50,7 +50,7 @@ export function ServerChoice({ onChosen }: ServerChoiceProps) {
 
         <h1 className="font-display text-2xl font-semibold text-text">Choose a directory server</h1>
         <p className="mt-2 text-sm leading-relaxed text-text-muted">
-          This is the one server Seal talks to — it only ever helps you find people by ID,
+          This is the one server Seal talks to, it only ever helps you find people by ID,
           never your messages. Anyone can run one; use Seal's network, or point at one you
           or someone you trust hosts.
         </p>
@@ -71,7 +71,7 @@ export function ServerChoice({ onChosen }: ServerChoiceProps) {
                 ? "Loading…"
                 : sealConfigured
                   ? officialUrl
-                  : "Not set up in this build yet — see the README."}
+                  : "Not set up in this build yet, see the README."}
             </p>
           </button>
 
@@ -119,7 +119,7 @@ export function ServerChoice({ onChosen }: ServerChoiceProps) {
           {busy ? "Connecting…" : "Continue"}
         </button>
         <p className="mt-3 text-xs text-text-faint">
-          You can change this later in Settings — it takes effect the next time you start Seal.
+          You can change this later in Settings, it takes effect the next time you start Seal.
         </p>
       </div>
     </div>

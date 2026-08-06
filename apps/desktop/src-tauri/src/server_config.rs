@@ -34,19 +34,14 @@ pub fn save(shared_data_dir: &Path, directory_url: &str) -> std::io::Result<()> 
 }
 
 /// The compiled-in "Seal" network, if this build actually has one
-/// configured — genuinely `None` rather than silently falling back to the
-/// embedded sentinel, so the frontend can tell "no official server set up
-/// yet" apart from "deliberately chose the local test server" instead of
-/// collapsing the two into one ambiguous "default" choice.
+/// configured — genuinely `None` rather than falling back to the embedded
+/// sentinel, so the frontend can tell "no official server set up yet"
+/// apart from "deliberately chose the local test server."
 ///
 /// Resolution order:
-/// 1. `P2P_CHAT_DIRECTORY_URL` — a *runtime* override, for local dev/testing
-///    (documented in the README).
-/// 2. `SEAL_DEFAULT_DIRECTORY_URL` — a *build-time* value. Bake in your own
-///    server when compiling a real release, e.g.
-///    `SEAL_DEFAULT_DIRECTORY_URL=https://directory.example.com cargo build --release`.
-///    Unset in ordinary dev builds — there is no real hosted server shipped
-///    with this repo until you configure one.
+/// 1. `P2P_CHAT_DIRECTORY_URL` — a runtime override for local dev/testing.
+/// 2. `SEAL_DEFAULT_DIRECTORY_URL` — a build-time value, baked in when
+///    compiling a real release. Unset in ordinary dev builds.
 pub fn official_server_url() -> Option<String> {
     if let Ok(runtime_override) = std::env::var("P2P_CHAT_DIRECTORY_URL") {
         return Some(runtime_override);

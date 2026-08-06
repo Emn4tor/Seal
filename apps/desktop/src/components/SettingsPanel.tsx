@@ -63,7 +63,7 @@ const CONFIRM_PHRASE = "DELETE EVERYTHING";
 const NETWORK_COPY: Record<NetworkStatus, { label: string; body: string }> = {
   public: {
     label: "Directly reachable",
-    body: "Peers can connect to you directly — no relay needed for a fast, low-latency path.",
+    body: "Peers can connect to you directly, no relay needed for a fast, low-latency path.",
   },
   private: {
     label: "Behind a NAT or firewall",
@@ -71,7 +71,7 @@ const NETWORK_COPY: Record<NetworkStatus, { label: string; body: string }> = {
   },
   unknown: {
     label: "Still figuring that out",
-    body: "Seal hasn't finished probing your reachability yet — this settles shortly after startup.",
+    body: "Seal hasn't finished probing your reachability yet, this settles shortly after startup.",
   },
 };
 
@@ -274,7 +274,7 @@ export function SettingsPanel({
     function handleKeyDown(e: KeyboardEvent) {
       e.preventDefault();
       const accelerator = acceleratorFromKeyEvent(e);
-      if (!accelerator) return; // only modifiers held so far — keep listening
+      if (!accelerator) return; // only modifiers held so far, keep listening
       setPttShortcut(accelerator);
       setRecordingShortcut(false);
       savePttSettings(pttEnabled, accelerator);
@@ -558,7 +558,7 @@ export function SettingsPanel({
                   </div>
 
                   <p className="mt-3 text-sm text-text-muted">
-                    This is your public ID — the address other people use to find and message you. It's
+                    This is your public ID, the address other people use to find and message you. It's
                     derived from your private key, which never leaves this device.
                   </p>
                   <div className="mt-3 flex items-center gap-2 rounded-md border border-border bg-ink px-3 py-2">
@@ -574,7 +574,7 @@ export function SettingsPanel({
 
                 <Section title="Accounts on this device">
                   <p className="mt-3 text-sm text-text-muted">
-                    Each account is a fully separate identity — its own keys, contacts, and messages.
+                    Each account is a fully separate identity, its own keys, contacts, and messages.
                   </p>
 
                   {!accountsLoading && otherAccounts.length > 0 && (
@@ -649,7 +649,7 @@ export function SettingsPanel({
                     <div>
                       <p className="text-sm font-medium text-text">Message notifications</p>
                       <p className="mt-1 text-xs text-text-muted">
-                        A native notification and a chime for new messages while Seal is open —
+                        A native notification and a chime for new messages while Seal is open -
                         including while it's minimized to the tray.
                       </p>
                     </div>
@@ -661,7 +661,7 @@ export function SettingsPanel({
                       <p className="text-sm font-medium text-text">Do Not Disturb</p>
                       <p className="mt-1 text-xs text-text-muted">
                         Mutes every message sound. Native popups and in-app banners still show
-                        normally — this only silences the chime.
+                        normally, this only silences the chime.
                       </p>
                     </div>
                     <Toggle on={dndEnabled} onClick={handleToggleDnd} />
@@ -669,7 +669,7 @@ export function SettingsPanel({
 
                   <p className="mt-5 text-xs text-text-muted">
                     A message in the conversation you're currently looking at always plays a
-                    sound, but never shows a popup — no point interrupting you about something
+                    sound, but never shows a popup, no point interrupting you about something
                     already on screen.
                   </p>
                 </Section>
@@ -750,7 +750,7 @@ export function SettingsPanel({
                 <Section title="Muted groups">
                   <p className="mt-3 text-sm text-text-muted">
                     Mute a specific group from its member list (the bell icon next to its name),
-                    for a set amount of time or indefinitely — it stays out of your notifications
+                    for a set amount of time or indefinitely, it stays out of your notifications
                     without affecting anyone else in it.
                   </p>
                 </Section>
@@ -766,7 +766,7 @@ export function SettingsPanel({
                       <span className="font-mono text-xs text-text-faint">{micThresholdDb.toFixed(0)} dB</span>
                     </div>
                     <p className="mt-1 text-xs text-text-muted">
-                      Audio quieter than this never gets sent — raise it if background noise keeps
+                      Audio quieter than this never gets sent, raise it if background noise keeps
                       triggering your mic, lower it if quiet speech gets cut off.
                     </p>
                     <input
@@ -783,8 +783,8 @@ export function SettingsPanel({
                   <div className="mt-5 border-t border-border pt-4">
                     <label className="text-sm font-medium text-text">Input device</label>
                     <p className="mt-1 text-xs text-text-muted">
-                      Takes effect the next time you join a voice channel — switching mid-call
-                      isn't supported yet.
+                      Takes effect the next time you join a voice channel, switching mid-call
+                      isn't supported.
                     </p>
                     <select
                       value={preferredInput ?? ""}
@@ -804,7 +804,7 @@ export function SettingsPanel({
                     <label className="text-sm font-medium text-text">Push to talk</label>
                     <div className="mt-2 flex items-center justify-between gap-3">
                       <p className="text-xs text-text-muted">
-                        A system-wide keybind — held from any app, not just Seal — that unmutes
+                        A system-wide keybind held from any app, that unmutes
                         your mic only while it's down.
                       </p>
                       <Toggle on={pttEnabled} onClick={handleTogglePtt} />
@@ -861,7 +861,7 @@ export function SettingsPanel({
               <>
                 <Section title="Directory server">
                   <p className="mt-3 text-sm text-text-muted">
-                    The one server Seal talks to, for finding people by ID. Anyone can run one — see{" "}
+                    The one server Seal talks to, for finding people by ID. Anyone can run one: see{" "}
                     <code className="font-mono text-text">scripts/setup-backend.sh</code> in the project
                     if you want to host your own.
                   </p>
@@ -914,7 +914,7 @@ export function SettingsPanel({
                     </div>
                   )}
                   {serverSaved && (
-                    <p className="mt-2.5 text-xs text-brass">Saved — restart Seal for this to take effect.</p>
+                    <p className="mt-2.5 text-xs text-brass">Saved, restart Seal for this to take effect.</p>
                   )}
                 </Section>
 

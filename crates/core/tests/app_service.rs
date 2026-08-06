@@ -24,33 +24,22 @@ async fn spawn_directory_server() -> String {
 
 /// This is the fullest-stack test in the project: two `AppService`s (the
 /// exact type a Tauri command layer wraps) register with a real directory
-/// server, discover each other purely by user_id (directory lookup + a
-/// fresh presence-based dial, no hand-wired contacts), exchange an
-/// encrypted DM, and run a group invite + group message — with everything
-/// persisted to each side's local encrypted store along the way.
+/// server, discover each other purely by user_id, exchange an encrypted
+/// DM, and run a group invite + group message, all persisted locally.
 ///
-/// `#[serial]`, along with every other test in this file that creates a
-/// real `AppService`: each one resolves its OS-keychain KEK through
-/// `identity::Keychain`, and libtest runs every test function in this
-/// binary concurrently on its own thread by default. On Windows this was
-/// enough to occasionally corrupt a concurrently-written/read identity
-/// blob — `rename_persists_and_survives_resume` failed in CI with
-/// "decryption failed (wrong key or corrupted data)" despite the crypto
-/// code itself being correct (see `storage::crypto`'s own unit tests) and
-/// an *identical* create/drop/resume test right above it passing —
-/// pointing at a race in the underlying Windows Credential Manager
-/// backend under concurrent access, not a logic bug here. Serializing
-/// these tests relative to each other (not to the rest of the suite)
-/// removes that race entirely.
+/// `#[serial]`, along with every other test here that creates a real
+/// `AppService`: each resolves its OS-keychain KEK, and libtest runs test
+/// functions concurrently by default, which on Windows was enough to
+/// occasionally corrupt a concurrently-accessed identity blob (a
+/// Credential Manager race, not a logic bug — see `storage::crypto`'s own
+/// unit tests). Serializing these tests relative to each other removes
+/// that race.
 ///
 /// Also ignored on Linux, along with every other test here: `Keychain`
-/// there needs a real D-Bus Secret Service, which a headless CI runner
-/// doesn't have. A `gnome-keyring-daemon` was tried in CI to provide one
-/// but proved unreliable in practice — several different keyring errors
-/// across several tuning attempts, including tests that had just passed
-/// moments earlier failing the next run. Same disclosed-gap treatment as
-/// this project's real-audio-hardware tests rather than a fragile CI
-/// workaround; real coverage of this code still runs on macOS/Windows.
+/// needs a real D-Bus Secret Service, which headless CI doesn't have, and
+/// `gnome-keyring-daemon` proved too unreliable to depend on. Same
+/// disclosed-gap treatment as this project's real-audio-hardware tests;
+/// real coverage still runs on macOS/Windows.
 #[tokio::test]
 #[serial]
 #[cfg_attr(

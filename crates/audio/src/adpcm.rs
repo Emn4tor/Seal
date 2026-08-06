@@ -1,17 +1,14 @@
-//! IMA ADPCM: a decades-old, well-documented 4:1 lossy compressor for 16-bit
-//! PCM audio. Chosen deliberately over an Opus binding — every mature Rust
-//! Opus crate wraps the real C library and needs cmake or a system libopus
-//! install to build, the exact class of native-build fragility this project
-//! avoided once already (SQLCipher → plain bundled SQLite). ADPCM is simple
-//! enough to implement correctly in a hundred-odd lines with zero
-//! dependencies, at the cost of noticeably less crisp voice quality than
-//! Opus, especially with background noise.
+//! IMA ADPCM: a decades-old, well-documented 4:1 lossy compressor for
+//! 16-bit PCM audio. Chosen over an Opus binding since every mature Rust
+//! Opus crate wraps the real C library and needs cmake/system libopus to
+//! build — the same native-build fragility this project already avoided
+//! once (SQLCipher -> plain bundled SQLite). ADPCM is simple enough to
+//! implement correctly in a hundred-odd lines with zero dependencies, at
+//! the cost of noticeably less crisp voice quality than Opus.
 //!
-//! Each `Encoder`/`Decoder` holds running state (`predictor`, `step_index`)
-//! that evolves continuously across every frame passed through it — callers
-//! should make a fresh pair per logical stream (e.g. a new voice call), not
-//! reuse one across unrelated streams, since a stream reset means the two
-//! sides' state would otherwise disagree.
+//! Each `Encoder`/`Decoder` holds running state that evolves across every
+//! frame passed through it — make a fresh pair per logical stream (e.g. a
+//! new voice call), not shared across unrelated ones.
 
 const STEP_TABLE: [i32; 89] = [
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,

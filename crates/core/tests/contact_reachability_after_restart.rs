@@ -4,22 +4,17 @@ use directory_server::{AppState, build_public_router};
 use p2p_core::AppService;
 use tokio::sync::{mpsc, oneshot};
 
-/// Regression test for a real bug: `AppService::ensure_connected_contact`
-/// used to only resolve a contact's dialable address the *first* time it
-/// was ever sent to, then trust that cached address for the rest of the
-/// process's lifetime. A peer's address is ephemeral (a fresh listen port
-/// is bound on every launch), so as soon as the other side restarted —
-/// something that happens constantly in `npm run tauri dev`, and even more
-/// so once a person hits the "can't run two dev instances" port conflict
-/// and starts killing/restarting processes to work around it — every send
-/// after that silently failed to dial, with no recovery short of removing
-/// and re-adding the contact. See `AppService::ensure_connected_contact`'s
-/// doc comment for the fix and why it's gated on connection state rather
-/// than refreshing unconditionally on every send.
+/// Regression test for a real bug: `ensure_connected_contact` used to only
+/// resolve a contact's dialable address the first time it was sent to,
+/// then trust that cached address forever. A peer's address is ephemeral
+/// (a fresh listen port every launch), so once the other side restarted —
+/// common during `npm run tauri dev` — every send after that silently
+/// failed to dial, with no recovery short of removing and re-adding the
+/// contact. See `AppService::ensure_connected_contact`'s doc comment for
+/// the fix and why it's gated on connection state.
 ///
 /// Structured like `actor_parity_harness.rs`: each side gets its own
-/// continuously-polling background task (command handling interleaved with
-/// `next_event()` via an mpsc channel), matching
+/// continuously-polling background task, matching
 /// `apps/desktop/src-tauri/src/actor.rs`'s real structure — libp2p's Swarm
 /// only makes progress while something is actively polling it.
 enum Cmd {

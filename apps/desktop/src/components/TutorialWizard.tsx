@@ -63,19 +63,19 @@ function buildSteps(): Step[] {
     {
       eyebrow: "How Seal works · 2 of 6",
       title: "A lock that reinvents itself",
-      body: "Every message to a person gets its own lock, and the lock changes after each one. Even if someone captured today's lock, it tells them nothing about yesterday's messages or tomorrow's — each message seals and re-seals the conversation independently. This is the same idea behind the Signal protocol's Double Ratchet.",
+      body: "Every message to a person gets its own lock, and the lock changes after each one. Even if someone captured today's lock, it tells them nothing about yesterday's messages or tomorrow's, each message seals and re-seals the conversation independently. This is the same idea behind the Signal protocol's Double Ratchet.",
       seal: "connecting",
     },
     {
       eyebrow: "How Seal works · 3 of 6",
       title: "A shared broadcast key, for groups",
-      body: "Groups work a little differently: everyone in the room holds one shared key, so Seal doesn't have to re-encrypt each message separately for every member. If someone leaves — or gets removed — the group quietly rotates to a new key. From that moment on, they can't read anything said afterward.",
+      body: "Groups work a little differently: everyone in the room holds one shared key, so Seal doesn't have to re-encrypt each message separately for every member. If someone leaves, or gets removed, the group quietly rotates to a new key. From that moment on, they can't read anything said afterward.",
       seal: "secure",
     },
     {
       eyebrow: "How Seal works · 4 of 6",
       title: "What the one server can see",
-      body: "Seal talks to exactly one small server: the directory. Its whole job is helping people find each other — it holds a public key, a display name, and, while you're online, a temporary address. There is no code path in this app that sends it a message. Its operator can empty it completely with one click, and nothing of value is lost.",
+      body: "Seal talks to exactly one small server: the directory. Its whole job is helping people find each other. It holds a public key, a display name, and, while you're online, a temporary address. There is no code path in this app that sends it a message. Its operator can empty it completely with one click, and nothing of value is lost.",
       seal: "idle",
       render: () => (
         <>
@@ -87,13 +87,13 @@ function buildSteps(): Step[] {
     {
       eyebrow: "How Seal works · 5 of 6",
       title: "Knowing it's really them",
-      body: "Your ID is derived directly from your keys — it can't be forged without also forging the private key that never leaves your device. If you want certainty about who you're talking to, compare their ID with them a second way: in person, or on a call. Once you've confirmed it, you know every sealed message from that ID really came from them.",
+      body: "Your ID is derived directly from your keys, it can't be forged without also forging the private key that never leaves your device. If you want certainty about who you're talking to, compare their ID with them a second way: in person, or on a call. Once you've confirmed it, you know every sealed message from that ID really came from them.",
       seal: "secure",
     },
     {
       eyebrow: "How Seal works · 6 of 6",
       title: "If you ever need to disappear",
-      body: "Settings → Data & Privacy has a button that instantly and permanently destroys everything on this device: your keys, your contacts, your history. It only affects this copy of the app — nobody you've talked to is touched by it — and there's no undo.",
+      body: "Settings → Data & Privacy has a button that instantly and permanently destroys everything on this device: your keys, your contacts, your history. It only affects this copy of the app, nobody you've talked to is touched by it - and there's no undo.",
       seal: "idle",
     },
   ];

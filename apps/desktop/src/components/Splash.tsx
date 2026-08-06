@@ -8,20 +8,17 @@ interface SplashProps {
 
 /** The boot splash: an externally-rendered clip (not a CSS animation) of
  * the CipherSeal mark spinning up and locking into its "secure" state.
- * Shown once per launch for a fixed ~3.0s regardless of how long the real
- * boot sequence takes underneath it — see `App.tsx`'s `splashDone` gate.
+ * Shown once per launch for a fixed ~3.0s regardless of the real boot
+ * sequence underneath (see `App.tsx`'s `splashDone` gate).
  *
- * The clip's own embedded audio (a whoosh) stays muted for its whole
- * runtime — two separate synthesized tones (`lib/bootSound.ts`) play
- * instead, timed to the clip's own visual beats rather than to the end:
- * the mark fully forming (~0.55s in) and the center's brief light flash
- * just before it locks in (~1.85s in). Both land well before the clip
- * actually ends at 3.0s.
+ * The clip's embedded audio stays muted bc its damn annoying; two synthesized tones
+ * (`lib/bootSound.ts`) play instead, timed to the mark forming (~0.55s)
+ * and the flash before it locks in (~1.85s), both well before the clip
+ * ends at 3.0s.
  *
  * Falls back hard on anything going wrong: a load error finishes
  * immediately, and a backstop timer covers the rare case where `ended`
- * never fires. After last session's "stuck on Waking up" bug, nothing
- * here is allowed to be able to hang the boot screen. */
+ * never fires — nothing here is allowed to hang the boot screen. */
 export function Splash({ onFinished }: SplashProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const onFinishedRef = useRef(onFinished);

@@ -52,27 +52,19 @@ pub fn load_or_create_keypair(path: &Path) -> anyhow::Result<Keypair> {
     Ok(keypair)
 }
 
-/// Runs the relay swarm until the process exits (or the first fatal error —
-/// callers should treat that as fatal to the whole process, same as any
-/// other listener failing to bind). Purely in-memory: reservations and
-/// relayed connections are never written to disk, so there's nothing here
-/// for a seized/leaked copy of the *database* to contain — the tradeoff and
-/// its reasoning are in `todo.md`.
+/// Runs the relay swarm until the process exits (or the first fatal
+/// error — callers should treat that as fatal to the whole process).
+/// Purely in-memory: nothing here is written to disk, so there's nothing
+/// for a seized/leaked copy of the database to contain (see `todo.md`).
 ///
 /// `external_addr`, when given, is the same base address advertised via
-/// `/v1/relay-info` (`DIRECTORY_RELAY_EXTERNAL_MULTIADDR`) — e.g.
-/// `/dns4/seal.emn4tor.de/tcp/4001`. Telling clients about this address over
-/// HTTP was only half the story: the relay's own `relay::Behaviour` decides
-/// what to put in a RESERVE response's `addrs` field from the swarm's own
-/// *confirmed external addresses*, which is empty by default (all it
-/// otherwise knows is that it's listening on `0.0.0.0`, not a real
-/// candidate). Without registering this address on the swarm too, every
-/// reservation response comes back with no usable address in it at all, and
-/// the requesting client rejects it outright
-/// (`ReservationFailedReason::NoAddressesInReservation`) — the relay looked
-/// reachable (`listen_on` succeeds, clients can even open a connection to
-/// it) right up until the actual reservation, which failed identically to a
-/// genuinely unreachable relay from every angle a client can observe.
+/// `/v1/relay-info` (e.g. `/dns4/seal.emn4tor.de/tcp/4001`). Advertising it
+/// over HTTP is only half the story: `relay::Behaviour` fills a RESERVE
+/// response's `addrs` from the swarm's own confirmed external addresses,
+/// which is empty by default. Without registering this address on the
+/// swarm too, every reservation comes back with no usable address, and
+/// the client rejects it (`NoAddressesInReservation`) even though the
+/// relay otherwise looked reachable.
 pub async fn run_relay(
     keypair: Keypair,
     listen_addr: SocketAddr,

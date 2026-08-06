@@ -74,25 +74,17 @@ impl Drop for TestKeychainGuard {
 
 // Runs unmodified on macOS despite the KEK now being Touch ID-protected
 // there: `cargo test` produces an unsigned binary, which can't be granted
-// `SecAccessControl` at all (see `identity::keychain::macos::set`'s
-// `ERR_SEC_MISSING_ENTITLEMENT` fallback) — so this exercises that
-// fallback path, not a live biometric prompt. A signed build is a
-// different story; there's no automated coverage of the actual
-// Touch-ID-gated path, since that needs a real interactive prompt.
+// `SecAccessControl` at all, so this exercises the fallback path in
+// `identity::keychain::macos::set`, not a live biometric prompt.
 //
-// Ignored on Linux specifically for this test, not the crate/CI wiring in
-// general: `ci.yml`'s "test (Linux)" step stands up a real D-Bus Secret
-// Service (`gnome-keyring-daemon` under `dbus-run-session`) precisely so
-// `AppService::load_or_create` and everything built on it works for real
-// there, and it does — every integration test elsewhere that resolves a
-// KEK through the same `Keychain` passes reliably. Only this test's own
-// tighter loop (create, delete, immediately recreate, all in well under a
-// second) has proven to reliably hit `NoStorageAccess(NoResult)` even with
-// a startup grace period added — gnome-keyring-daemon in a headless CI
-// container evidently isn't fast/robust enough for that specific rapid
-// churn, independent of the one-time startup race the grace period does
-// fix for everything else. Real coverage of this exact stability property
-// still exists via macOS and Windows, both of which run it unmodified.
+// Ignored on Linux for this test specifically, not the crate/CI wiring in
+// general: `ci.yml` stands up a real D-Bus Secret Service and every other
+// integration test that resolves a KEK through `Keychain` passes reliably
+// there. Only this test's tight create/delete/recreate loop has proven to
+// reliably hit `NoStorageAccess(NoResult)` even with a startup grace
+// period — gnome-keyring-daemon in headless CI isn't fast/robust enough
+// for that specific rapid churn. Real coverage still exists via macOS and
+// Windows, both of which run it unmodified.
 #[cfg_attr(
     target_os = "linux",
     ignore = "gnome-keyring-daemon in headless CI hasn't proven reliable for this test's rapid create/delete/recreate cycle specifically — see this comment"

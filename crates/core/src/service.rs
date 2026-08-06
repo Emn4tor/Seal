@@ -178,19 +178,11 @@ impl AppService {
         Self::load_or_create_with(data_dir, directory_url, display_name, false).await
     }
 
-    /// Like `load_or_create`, but with `simulate_wan` exposed: a testing-
-    /// only knob (see `scripts/run-two-mac-instances.sh`) that makes this
-    /// account withhold its LAN-reachable address from presence entirely,
-    /// so it's reachable *only* through the relay — even when a real
-    /// direct dial would actually succeed, e.g. two profiles running on
-    /// the very same machine, which would otherwise trivially connect over
-    /// loopback and never exercise the relay/dcutr path real people on two
-    /// different networks are stuck depending on. Real product code should
-    /// always go through `load_or_create` instead — this exists as a
-    /// separate method rather than a plain extra parameter on
-    /// `load_or_create` so its own several existing callers (this crate's
-    /// tests included) don't all need to thread through a flag they'd
-    /// always pass `false` for anyway.
+    /// Like `load_or_create`, but with `simulate_wan` exposed for testing:
+    /// makes this account withhold its LAN address from presence so it's
+    /// reachable only through the relay, exercising the relay/dcutr path
+    /// even when both instances are on one machine. Real code should use
+    /// `load_or_create` instead.
     pub async fn load_or_create_with(
         data_dir: PathBuf,
         directory_url: String,
@@ -259,30 +251,16 @@ impl AppService {
         let pickle_json = identity.pickle_to_json()?;
         store.save_identity(&identity.user_id(), &display_name, &pickle_json, now())?;
 
-        // 0.0.0.0, not loopback: gets two machines on the same LAN actually
-        // talking to each other. Binding all interfaces means the swarm can
-        // emit a `NewListenAddr` per interface (Wi-Fi, Ethernet, a VPN
-        // adapter, ...) in unpredictable order, so every non-loopback
-        // address that shows up within a short settle window gets
-        // advertised below, not just whichever one enumerated first — the
-        // request-response dial (`send_request_with_addresses`) already
-        // tries every address on a contact, so handing it more candidates
-        // than exactly one is safe, not just tolerated.
-        //
-        // Still doesn't cover peers on a different network/behind a NAT
-        // that can't be reached by any of these addresses directly — that
-        // needs the relay/autonat path this workspace already has wired at
-        // the transport layer, layered in properly as a follow-up once
-        // there's a relay to actually dial through.
-        //
+        // Bind 0.0.0.0 (not loopback) so two machines on the same LAN can
+        // reach each other; every non-loopback address that comes up gets
+        // advertised below, since the dial side already tries every
+        // candidate on a contact. Peers behind a NAT still need the
+        // relay/autonat path handled further down.
+
         // Load this account's persisted libp2p transport keypair, or mint
-        // and save one on first run. Without this, `ChatNode::new` would
-        // hand out a fresh random PeerId on *every* launch — the directory
-        // server would always have the current one, but anyone who already
-        // cached this account as a contact before the restart would be
-        // silently stuck dialing a PeerId nobody answers to anymore, with
-        // nothing prompting them to re-add it. See `p2p_identity` in
-        // `storage`'s schema.sql.
+        // and save one on first run — otherwise every launch would hand
+        // out a fresh PeerId and existing contacts couldn't dial us
+        // anymore. See `p2p_identity` in `storage`'s schema.sql.
         let p2p_keypair = match store.load_p2p_keypair()? {
             Some(bytes) => libp2p::identity::Keypair::from_protobuf_encoding(&bytes)
                 .map_err(|e| anyhow::anyhow!("stored libp2p keypair is corrupt: {e}"))?,
@@ -306,27 +284,16 @@ impl AppService {
         let listen_addrs = node
             .wait_for_listen_addrs(std::time::Duration::from_millis(300))
             .await;
-        // Advertise every address we're actually listening on, loopback
-        // included — not just non-loopback ones. Two instances on the same
-        // machine (the documented local two-account test flow) are exactly
-        // the case where a LAN-facing address can be present but not
-        // actually dialable right now (e.g. macOS's Local Network privacy
-        // permission silently blocking a private-range dial for an
-        // unsigned dev build until the user grants it — see
-        // `apps/desktop/src-tauri/Info.plist`'s `NSLocalNetworkUsageDescription`)
-        // while loopback would have worked fine. `send_request_with_addresses`
-        // already tries every candidate address on a contact, so handing
-        // it loopback *in addition to* LAN addresses (rather than
-        // excluding it whenever a LAN one exists) is a free fallback: a
-        // remote peer on a different machine just can't reach our
-        // loopback candidate and falls through to the others, exactly as
-        // it already does for any other unreachable candidate.
+        // Advertise every listening address, loopback included: two
+        // instances on the same machine (the local two-account test flow)
+        // can have a LAN address present but temporarily undialable (e.g.
+        // macOS's Local Network permission), where loopback still works.
+        // A remote peer just can't reach loopback and falls through to the
+        // other candidates, so including it is a free fallback.
         //
-        // `simulate_wan` skips all of that and advertises nothing: not a
-        // preference for the relay, an actual absence of any directly-
-        // dialable address, matching what someone on a genuinely different
-        // network/behind a different NAT looks like to us. See
-        // `load_or_create_with`'s doc comment.
+        // `simulate_wan` skips this and advertises nothing, mimicking a
+        // peer with no directly-dialable address at all (see this
+        // method's doc comment).
         let addrs: Vec<String> = if simulate_wan {
             Vec::new()
         } else {
@@ -335,26 +302,16 @@ impl AppService {
         let peer_id_str = node.local_peer_id().to_string();
 
         // Best-effort NAT-traversal fallback: reserve a circuit through the
-        // directory server's relay (if it's running one and has advertised
-        // an externally-reachable address for it) so we're still reachable
-        // when nobody can dial `addrs` directly — which is the common case
-        // for two peers on different networks/behind different NATs, not
-        // just an edge case. `dcutr` (already wired into `ChatBehaviour`)
-        // then tries to upgrade any resulting connection to a direct one on
-        // its own. Any failure here — no relay configured, unreachable,
-        // timed out — just means falling back to LAN-only reachability
-        // (today's behavior), not a startup failure.
+        // directory's relay (if any) so we're still reachable when nobody
+        // can dial `addrs` directly — the common case for peers behind
+        // different NATs. `dcutr` then tries to upgrade to a direct
+        // connection on its own; any failure here just falls back to
+        // LAN-only reachability, not a startup failure.
         //
-        // This has to happen here, blocking, before the main event loop
-        // starts driving `node`'s swarm — `ChatNode` is owned single-
-        // threaded by one actor loop (see the heartbeat-closure comment
-        // below), so there's no safe way to run this concurrently in the
-        // background once that loop is running. Which makes the timeout
-        // below a real, unavoidable tax on every single app launch when the
-        // relay is misconfigured/unreachable, not just a one-off: kept
-        // short (rather than the more generous 10s a one-shot operation
-        // would otherwise deserve) specifically so a broken relay costs a
-        // few seconds once per launch, not a launch that visibly hangs.
+        // Must happen here, blocking, before the actor loop starts driving
+        // `node`'s swarm (single-threaded, see below), so the timeout is
+        // kept short to avoid a visibly hanging launch when the relay is
+        // unreachable.
         let relay_addrs: Vec<String> = match directory.get_relay_info().await {
             Ok(info) => match info.multiaddr.parse::<Multiaddr>() {
                 Ok(relay_addr) => match node
@@ -388,21 +345,14 @@ impl AppService {
             )
             .await?;
 
-        // Recurring heartbeat, so presence survives past the one-shot
-        // announce's 300s TTL for as long as the app keeps running. Runs on
-        // its own task since `AppService` is owned single-threaded by one
-        // actor loop (see `apps/desktop/src-tauri/src/actor.rs`) — it can't
-        // safely share live access to `node`'s swarm across tasks, so
-        // `get_multiaddrs` re-announces the same addresses captured above
-        // on every tick rather than re-querying the swarm for new ones;
-        // still a real improvement over no heartbeat at all, since the
-        // point is keeping the existing record from expiring. A *second*,
-        // independent `Identity` is built from the same pickle rather than
-        // sharing `node.identity` — `Identity` wraps a `vodozemac::olm`
-        // `Account`, which isn't `Clone`, and `ChatNode.identity` isn't
-        // behind an `Arc`, so this avoids reworking that field's type just
-        // for this. 150s (half the server's 300s TTL cap) keeps a healthy
-        // margin before expiry rather than cutting it close.
+        // Recurring heartbeat so presence survives past the one-shot
+        // announce's 300s TTL. Runs on its own task since `AppService` is
+        // single-threaded (see `apps/desktop/src-tauri/src/actor.rs`), so
+        // it re-announces the same addresses captured above rather than
+        // re-querying the swarm. A second `Identity` is built from the
+        // same pickle since `Identity` (wrapping a non-`Clone`
+        // `vodozemac::olm::Account`) can't just be shared. 150s keeps a
+        // healthy margin before the 300s TTL expires.
         let heartbeat_identity = std::sync::Arc::new(Identity::from_pickle_json(&pickle_json)?);
         let heartbeat_addrs = addrs;
         let heartbeat_relay_addrs = relay_addrs;
@@ -527,31 +477,16 @@ impl AppService {
     }
 
     /// Re-fetches this contact's presence from the directory whenever we
-    /// don't currently have a live connection to them — a peer's dialable
-    /// address is ephemeral session data (see `add_contact_by_user_id`'s
-    /// doc comment), not identity data, and it changes on *every* restart
-    /// of their app: `AppService::load_or_create_with` binds a fresh
-    /// ephemeral listen port every launch even though the PeerId itself
-    /// now persists. The previous version of this only ever refreshed once
-    /// — the very first time a contact was added — then trusted whatever
-    /// address was cached then for the rest of the process's lifetime,
-    /// even after the underlying connection dropped (e.g. because the
-    /// other side restarted): every send after that silently failed to
-    /// dial the now-stale address, with no automatic recovery short of
-    /// removing and re-adding the contact.
+    /// don't have a live connection to them: a peer's address is ephemeral
+    /// session data (see `add_contact_by_user_id`) that changes on every
+    /// restart of their app, so trusting a once-cached address forever
+    /// left sends silently failing after the other side restarted.
     ///
-    /// Gating the refresh on connection state rather than doing it
-    /// unconditionally on every send matters, not just as an optimization:
-    /// an always-refresh version was tried and reliably broke
-    /// `full_app_service_flow_dm_then_group` — the extra directory
-    /// round-trip before `invite_to_group` could send its (already-fast)
-    /// group-key share was enough added latency to occasionally cross
-    /// libp2p's 10s default idle-connection timeout while nothing else was
-    /// using that connection, killing it out from under the gossipsub mesh
-    /// that had just formed. Refreshing only when we're not already
-    /// connected costs nothing on the common, already-connected path and
-    /// only pays the round-trip when we were about to need a fresh dial
-    /// anyway.
+    /// Gating the refresh on connection state (rather than refreshing
+    /// unconditionally) isn't just an optimization: an always-refresh
+    /// version reliably broke `full_app_service_flow_dm_then_group` by
+    /// adding enough latency before `invite_to_group`'s key share to trip
+    /// libp2p's idle-connection timeout on the just-formed gossipsub mesh.
     async fn ensure_connected_contact(&mut self, user_id: &str) -> anyhow::Result<()> {
         if !self.node.has_contact(user_id) || !self.node.is_connected_to(user_id) {
             self.add_contact_by_user_id(user_id).await?;

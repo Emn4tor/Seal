@@ -2,27 +2,18 @@
 //! shift -> ADPCM encode -> broadcast to every other participant's raw
 //! `libp2p-stream`, and the reverse on receive, mixed and played back.
 //!
-//! Topology is full mesh (every participant opens a direct stream to every
-//! other participant), an explicit scale ceiling appropriate for this
-//! project's small-group scope, not an SFU. Mixing is a fixed 20ms-tick,
-//! drop-if-late scheme (a participant with no frame ready for a given tick
-//! is just treated as silent for it) rather than an adaptive jitter
-//! buffer: a deliberate, disclosed simplification, not a professional-
-//! grade VoIP mixer.
+//! Topology is full mesh, an explicit scale ceiling for this project's
+//! small-group scope, not an SFU. Mixing is a fixed 20ms-tick, drop-if-
+//! late scheme rather than an adaptive jitter buffer: a deliberate
+//! simplification, not a professional-grade VoIP mixer.
 //!
-//! Encryption here is transport-level Noise only (the same
-//! authenticated, forward-secret channel every P2P connection already
-//! gets); audio is *not* additionally wrapped in Olm/Megolm the way chat
-//! messages are. See `docs/THREAT_MODEL.md`.
+//! Encryption is transport-level Noise only, not additionally wrapped in
+//! Olm/Megolm like chat messages. See `docs/THREAT_MODEL.md`.
 //!
-//! Voice activity: the mic threshold is a noise gate applied at the
-//! *sender*: a frame below threshold is simply never encoded or sent.
-//! This means "is someone speaking" needs no separate detection on the
-//! receive side: any frame that arrives at all is, by construction, one
-//! the sender's own gate already decided was speech. Each connection just
-//! tracks when its last frame arrived and reports "speaking" while that's
-//! recent (a short hangover so brief gaps/jitter between frames don't
-//! flicker the indicator).
+//! Voice activity: the mic threshold is a noise gate at the *sender*, so
+//! "is someone speaking" needs no receive-side detection — any frame that
+//! arrives already passed the sender's gate. Each connection tracks its
+//! last-frame time and reports "speaking" for a short hangover after.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -54,20 +45,13 @@ pub const DEFAULT_MIC_THRESHOLD_DB: f32 = -50.0;
 const SPEAKING_HANGOVER: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// How many consecutive below-threshold frames the noise gate tolerates
-/// before it actually closes and stops transmitting — 10 frames * 20ms =
-/// 200ms, a standard gate "release"/hold time. Without this, a quiet
-/// consonant or a brief breath mid-sentence (extremely common in normal
-/// speech) drops the level below threshold for a frame or two, the gate
-/// slams shut, then reopens a moment later when the next syllable starts —
-/// each open/close transition stops and restarts transmission with no
-/// ramp, which is exactly what an abrupt digital "click" is. A sentence
-/// with several such dips sounds like a rapid train of clicks, audible as
-/// a buzzing/whirring texture riding on top of the voice, sometimes loud
-/// enough to drown it out. Holding the gate open across brief dips means
-/// far fewer transitions in the first place — genuinely closing only
-/// during real pauses between words/sentences — and what transitions
-/// remain are further softened by the playback-side declick filter (see
-/// `spawn_audio_io_thread`'s output stream).
+/// before it closes — 10 frames * 20ms = 200ms, a standard gate release
+/// time. Without this, brief dips below threshold (a quiet consonant, a
+/// breath) rapidly open/close the gate, and each transition is an abrupt
+/// digital "click" — several dips in a sentence sound like buzzing.
+/// Holding the gate open across brief dips means far fewer transitions,
+/// closing only during real pauses; remaining ones are softened further
+/// by the declick filter in `spawn_audio_io_thread`.
 const GATE_HOLD_FRAMES: u32 = 10;
 
 const MIXER_TICK: std::time::Duration = std::time::Duration::from_millis(20);
@@ -194,22 +178,17 @@ fn resolve_device(
 }
 
 /// Spawns the OS thread that owns the actual cpal devices/streams. Kept
-/// entirely inside one thread (host/device/stream construction and all)
-/// since `cpal::Stream` is not `Send` on every backend; the callbacks it
-/// invokes only close over `rtrb`'s `Send`-safe `Producer`/`Consumer`.
-/// Never fails outright: a machine with no usable microphone/speaker (no
-/// device, wrong sample format, permission denied, a headless test
-/// environment) still gets a working call, just one that neither captures
-/// nor plays real audio. Everything else (presence, mesh dialing, stream
-/// negotiation, encode/mix loops running on silence) still works, which
-/// matters for testing those independently of real hardware.
+/// entirely inside one thread since `cpal::Stream` isn't `Send` on every
+/// backend; callbacks only close over `rtrb`'s `Send`-safe
+/// `Producer`/`Consumer`. Never fails outright: a machine with no usable
+/// mic/speaker still gets a working call, just one that captures/plays no
+/// real audio, so presence, mesh dialing, and the encode/mix loops can
+/// still be tested independent of real hardware.
 ///
 /// `preferred_input`/`preferred_output`, when set, are matched by exact
-/// device name (see [`resolve_device`]) — chosen once, at call start:
-/// unlike settings like the mic threshold, there's no live "switch device
-/// mid-call" support, since that means tearing down and rebuilding the
-/// actual OS audio streams, not just adjusting a value a running loop reads
-/// each tick.
+/// device name (see [`resolve_device`]), chosen once at call start —
+/// switching devices mid-call isn't supported, since that means rebuilding
+/// the actual OS audio streams, not adjusting a live value.
 async fn spawn_audio_io_thread(
     mic_tx: rtrb::Producer<f32>,
     speaker_rx: rtrb::Consumer<f32>,
@@ -281,21 +260,14 @@ async fn spawn_audio_io_thread(
                 output_config,
                 move |data: &mut [f32], _| {
                     for frame in data.chunks_mut(output_channels) {
-                        // The ring buffer legitimately runs dry constantly —
-                        // any tick nobody's speaking, or a gate-hold boundary
-                        // (see `GATE_HOLD_FRAMES`), leaves it un-topped-up
-                        // and this falls back to `0.0`. Jumping straight to
-                        // (or back out of) that fallback is a real
-                        // discontinuity — audible as a sharp digital click,
-                        // and one that happens on *every* underrun edge, not
-                        // just the one at call start. A one-pole low-pass
-                        // closes that gap over a handful of samples instead
-                        // of in one step: negligible effect on continuous
-                        // real audio (adjacent samples of a band-limited
-                        // voice signal are already close together, so the
-                        // filter tracks them almost exactly), but it turns
-                        // an instant step into a short, much less audible
-                        // ramp at every underrun boundary.
+                        // The ring buffer legitimately runs dry constantly
+                        // (any tick nobody's speaking, or a gate-hold
+                        // boundary, see `GATE_HOLD_FRAMES`) and falls back
+                        // to `0.0` — jumping straight to/from that is an
+                        // audible click on every underrun edge. A one-pole
+                        // low-pass closes that gap over a few samples
+                        // instead, turning an instant step into a much
+                        // less audible ramp.
                         let target = speaker_rx.pop().unwrap_or(0.0);
                         declicked += 0.05 * (target - declicked);
                         for s in frame {
@@ -392,22 +364,15 @@ impl VoiceCallState {
 
         let mut tasks = Vec::new();
 
-        // Registering the inbound-stream acceptor happens *before* awaiting
-        // real audio I/O setup below, deliberately: a group call's mesh
-        // dial is self-healing (a heartbeat re-announces every 5s, so a
-        // dial that raced ahead of the peer's own acceptor just succeeds on
-        // the next attempt), but a 1:1 call dials exactly once, right after
-        // the callee accepts — on both sides, roughly simultaneously. If
-        // this acceptor registration waited on `spawn_audio_io_thread`
-        // below (real `cpal` device enumeration and stream construction,
-        // which "can occasionally take a while" per that function's own
-        // doc comment) the way it used to, the *other* side's one-shot
-        // dial could easily arrive and fail negotiation before this side
-        // was even listening yet — with nothing to retry it, that's a
-        // permanently silent, un-connected call. Registering this first
-        // costs nothing (it doesn't depend on `input_rate`/`output_rate`,
-        // only on state that's already initialized above) and closes the
-        // window entirely for the case that actually needs it.
+        // Registered before awaiting real audio I/O setup below,
+        // deliberately: a 1:1 call's dial happens exactly once, right
+        // after the callee accepts on both sides, roughly simultaneously.
+        // If this waited on `spawn_audio_io_thread` (which can take a
+        // while, per its own doc comment) the other side's one-shot dial
+        // could arrive and fail negotiation before this side was even
+        // listening, with nothing to retry it. Registering first closes
+        // that window (a group call's dial is self-healing via its 5s
+        // heartbeat, so it doesn't strictly need this, but it's free).
         {
             let mut acceptor_control = control.clone();
             let jitter = jitter.clone();
@@ -606,18 +571,12 @@ impl VoiceCallState {
     /// Same dial as [`Self::ensure_connected`], but fire-and-forget on an
     /// independent task instead of awaited inline.
     ///
-    /// `Control::open_stream` needs the *swarm* to be polled again while it
-    /// awaits its own internal channel round-trip: fine when something
-    /// else keeps driving the swarm concurrently, but `ChatNode::next_event`
-    /// is the *only* thing that ever polls it, called request/response
-    /// style from the outside. Awaiting `ensure_connected` from anywhere
-    /// inside that same call chain (as `AppService::handle_voice_presence`
-    /// does, reacting to a just-received `VoicePresence`) is a genuine
-    /// deadlock: the swarm can't be polled again until this call returns,
-    /// and this call can't return until the swarm is polled again.
-    /// Spawning it lets `next_event` return immediately and keep polling
-    /// the swarm on the caller's own next iteration, which is what
-    /// eventually unblocks the spawned dial.
+    /// `Control::open_stream` needs the swarm polled again while it awaits
+    /// its own channel round-trip, but `ChatNode::next_event` is the only
+    /// thing that ever polls it. Awaiting `ensure_connected` from inside
+    /// that same call chain (as `handle_voice_presence` does) is a genuine
+    /// deadlock. Spawning lets `next_event` return and keep polling, which
+    /// is what eventually unblocks the spawned dial.
     pub fn spawn_ensure_connected(&self, peer_id: PeerId, user_id: String) {
         {
             let mut connected = self.connected_peers.lock().unwrap();
@@ -852,21 +811,14 @@ async fn run_encode_loop(
 /// The other half of `run_encode_loop`: takes whatever frames it queued and
 /// actually puts them on the wire, exactly one per tick.
 ///
-/// This split exists because processing (capture -> resample -> pitch-shift
-/// -> gate -> encode) and transmission have different timing needs.
-/// Processing only needs to keep up *on average*; a `CAPTURE_POLL` cycle
-/// delayed by scheduling jitter (another task hogging the runtime, a GC-like
-/// pause, anything) just processes a bigger batch next time, which is fine
-/// for CPU work. But writing straight to the peer socket the moment each
-/// frame was ready — what this code used to do — turns that same delay into
-/// several frames' worth of audio landing on the wire back-to-back, then a
-/// gap, then another burst: audible as exactly the stutter/lag this exists
-/// to fix, since the mixer on the *receiving* end pulls at most one frame
-/// per fixed 20ms tick (see `run_mixer_loop`) and has no jitter buffer to
-/// smooth a bursty arrival pattern back out. Pacing egress here — one frame
-/// per tick, unconditionally, regardless of how processing happened to be
-/// batched — keeps what actually reaches the network evenly spaced, which
-/// is what the receiving mixer actually needs.
+/// Processing (capture -> resample -> pitch-shift -> gate -> encode) only
+/// needs to keep up on average; writing straight to the socket the moment
+/// each frame was ready — what this used to do — turns scheduling jitter
+/// into bursty transmission (several frames back-to-back, then a gap),
+/// audible as stutter since the receiving mixer (`run_mixer_loop`) pulls
+/// at most one frame per fixed tick with no jitter buffer to smooth it
+/// out. Pacing egress here, one frame per tick regardless of how
+/// processing batched, keeps what reaches the network evenly spaced.
 async fn run_send_pacer_loop(outbound: OutboundQueue, writers: Writers, running: Arc<AtomicBool>) {
     let mut ticker = tokio::time::interval(SEND_PACING_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

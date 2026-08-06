@@ -133,7 +133,7 @@ pub enum ChatEvent {
 pub enum NetworkStatus {
     /// We appear to be reachable by a direct dial from the outside.
     Public,
-    /// We're behind a NAT/firewall that direct dials can't reach — relay +
+    /// We're behind a NAT/firewall that direct dials can't reach: relay +
     /// hole-punching (dcutr) is what makes us reachable at all.
     Private,
     /// Not enough probes yet to know either way.

@@ -30,17 +30,13 @@ pub struct ChatNode {
     megolm: MegolmManager,
     contacts: HashMap<String, Contact>,
     /// Tracks the outbound request id for a `CallInvite`/`CallAccept` send
-    /// (mapped to `(call_id, peer_user_id)`) so a transport-level failure
-    /// (`OutboundFailure`) or an `ack: false` response (the recipient's
-    /// transport got it but couldn't decrypt it) can be recognized as *the
-    /// call* failing — not just "some message to this peer didn't arrive"
-    /// — and reported as `ChatEvent::CallFailed` instead of the generic
-    /// `MessageSendFailed`, which a caller mid-dial has no way to tell
-    /// apart from an unrelated failed chat message to the same person.
-    /// Only these two signals are tracked (not `CallDecline`/`CallEnd`):
-    /// both directions of local hangup already tear down call state
-    /// immediately regardless of whether the peer ever finds out, so
-    /// there's nothing left to fail *for*.
+    /// (mapped to `(call_id, peer_user_id)`) so a transport failure or an
+    /// `ack: false` response can be reported as `ChatEvent::CallFailed`
+    /// rather than the generic `MessageSendFailed`, which a caller mid-dial
+    /// can't distinguish from an unrelated failed message. Only these two
+    /// signals are tracked, since a local hangup (`CallDecline`/`CallEnd`)
+    /// already tears down call state regardless of whether the peer finds
+    /// out.
     pending_call_sends: HashMap<request_response::OutboundRequestId, (String, String)>,
 }
 
@@ -189,20 +185,14 @@ impl ChatNode {
         addrs
     }
 
-    /// Requests a circuit reservation on `relay_addr` (a
-    /// `/…/p2p/<relay-peer-id>` multiaddr, as returned by the directory
-    /// server's `/v1/relay-info`) so we're reachable even when nobody can
-    /// dial us directly. `dcutr` (already in `ChatBehaviour`) then attempts
-    /// to upgrade any resulting connection to a direct one automatically —
-    /// nothing else here has to drive that part.
+    /// Requests a circuit reservation on `relay_addr` so we're reachable
+    /// even when nobody can dial us directly; `dcutr` then attempts to
+    /// upgrade any resulting connection to a direct one automatically.
     ///
-    /// Best-effort by design: callers should treat a failure/timeout as "no
-    /// relay available right now" and fall back to whatever addresses
-    /// already work (LAN reachability predates this and doesn't depend on
-    /// it). Called once at startup, before the main event loop begins
-    /// driving the swarm — same pattern as `wait_for_listen_addrs`, and for
-    /// the same reason: nothing else is polling `self.swarm` concurrently
-    /// yet, so an exclusive wait loop here is safe.
+    /// Best-effort: callers should treat a failure/timeout as "no relay
+    /// available" and fall back to addresses that already work. Called
+    /// once at startup, before the event loop starts polling `self.swarm`
+    /// (same pattern as `wait_for_listen_addrs`, for the same reason).
     pub async fn reserve_relay_circuit(
         &mut self,
         relay_addr: Multiaddr,

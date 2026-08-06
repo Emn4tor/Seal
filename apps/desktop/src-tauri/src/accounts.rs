@@ -6,7 +6,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 /// One identity that lives on this device. `account_id` is a local,
-/// arbitrary folder name chosen at creation time — deliberately *not*
+/// arbitrary folder name chosen at creation time, deliberately *not*
 /// `user_id`, since the user_id is only known once `AppService::load_or_create`
 /// has actually generated the identity, and this needs to be decided first
 /// so a data dir exists to generate it into.
@@ -27,20 +27,18 @@ pub struct AccountsFile {
 
 /// What to do at startup, decided here (not in the frontend) since the one
 /// env var that can short-circuit it (`P2P_CHAT_PROFILE`) is a backend
-/// concept — see each variant for when it applies.
+/// concept. See each variant for when it applies.
 pub enum BootDecision {
     /// No accounts exist on this device yet.
     NeedsFirstAccount,
     /// Accounts exist but none is unambiguously "the one" (e.g. the active
-    /// account was just removed) — let the user pick or add another.
+    /// account was just removed) let user picj new one
     NeedsPicker(Vec<AccountEntry>),
-    /// Load this account with no prompt at all — the common case, and what
+    /// Load this account with no prompt at all, the common case, and what
     /// makes launching Seal again "just log you in."
     Resume(AccountEntry),
     /// `P2P_CHAT_PROFILE` was set but didn't match an existing account's
-    /// display name — create one non-interactively with that name. Lets
-    /// dev/test tooling (`scripts/run-two-mac-instances.sh`, the two-terminal
-    /// `npm run tauri dev` flow in the README) keep working unchanged.
+    /// display name, create one non-interactively with that name.
     CreateWithName(String),
 }
 
@@ -123,7 +121,7 @@ mod tests {
     }
 
     // These tests all set/remove P2P_CHAT_PROFILE, which is process-global
-    // state — run serially against distinct temp dirs isn't enough on its
+    // state, run serially against distinct temp dirs isn't enough on its
     // own, so each test cleans up after itself and none run concurrently by
     // virtue of being in the same file with default test harness settings...
     // to be safe, use a mutex so env var mutation never races across tests.

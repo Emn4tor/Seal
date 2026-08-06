@@ -10,11 +10,7 @@
 @import "@fontsource/jetbrains-mono/latin-500.css";
 
 /*
-  Palette concept: a cipher room at night, not a hacker terminal — a
-  blue-black "ink" ground (not neutral black) with two metallic accents:
-  warm brass (the wax-seal / verified-identity color) and cool verdigris
-  (the "channel is live and encrypted" color). Deliberately not a single
-  neon accent on near-black.
+  Palette concept: a cipher room at night, not a hacker terminal
 */
 @theme {
   --color-ink: #0e1116;
@@ -135,7 +131,7 @@ input[type="range"] {
   animation: seal-spin-ccw 2.4s linear infinite;
 }
 
-/* The center mark's own pulse — a two-beat "lub-dub" rather than a plain
+/* The center mark's own pulse, a two-beat "lub-dub" rather than a plain
    sine breathe, so it actually reads as a heartbeat rather than generic
    throbbing, echoing the "waking up" copy it accompanies. */
 @keyframes seal-heartbeat {
@@ -158,7 +154,7 @@ input[type="range"] {
   animation: seal-heartbeat 1.6s ease-in-out infinite;
 }
 
-/* In-app toast entrance — see `ToastStack.tsx`. A reliable, always-visible
+/* In-app toast entrance - see `ToastStack.tsx`. A reliable, always-visible
    stand-in for OS notifications, which macOS's dev-mode workaround
    (impersonating Terminal.app's identity, since an unbundled `cargo run`
    binary has no bundle of its own) can't be relied on to actually show,

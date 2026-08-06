@@ -60,3 +60,5 @@ Proper code signing + notarization removes the warning entirely. `tauri-action` 
 - `APPLE_TEAM_ID`, the Apple Developer Team ID
 
 Once those are wired up, `signingIdentity` in `tauri.conf.json` should be changed from `"-"` to the real `APPLE_SIGNING_IDENTITY` value (Tauri accepts the identity from either the config or the env var, not both at once, so pick one and drop the other), and the `releaseBody` note in `release.yml` covering this issue can be deleted.
+
+This file was augmented/rephrased by Claude Codea

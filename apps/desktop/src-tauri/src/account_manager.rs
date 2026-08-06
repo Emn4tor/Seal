@@ -3,7 +3,7 @@ use tokio::sync::RwLock;
 use crate::actor::ActorHandle;
 
 /// Holds whichever account is currently loaded, if any, behind a lock
-/// instead of a plain `app.manage(ActorHandle)` — so switching accounts can
+/// instead of a plain `app.manage(ActorHandle)`, so switching accounts can
 /// swap the handle in place instead of requiring an app restart. Dropping
 /// the old handle (its only `Sender` clone) ends that account's actor task
 /// on its own next time it loops around to `rx.recv()`, cleanly tearing down

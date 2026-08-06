@@ -54,6 +54,20 @@ const SPEAKING_HANGOVER: std::time::Duration = std::time::Duration::from_millis(
 /// by the declick filter in `spawn_audio_io_thread`.
 const GATE_HOLD_FRAMES: u32 = 10;
 
+/// How fast the playback anti-click filter (see [`declick_step`]) tracks
+/// its target. Deliberately close to `1.0`: its job is smoothing a literal
+/// single-sample discontinuity at a ring-buffer underrun edge, not a
+/// general-purpose low-pass on the actual voice signal. A slow (small)
+/// coefficient looks like it'd be "gentler," but an IIR filter's steady-
+/// state frequency response applies to *every* sample it processes, not
+/// just the ones at a discontinuity — too slow and it audibly muffles
+/// perfectly good continuous audio the entire time, not only at edges.
+/// `0.6` settles ~94% of the way to a step target within 3 samples (a
+/// fraction of a millisecond at any real device rate) while pushing the
+/// filter's steady-state cutoff safely above the frequencies that carry
+/// speech intelligibility.
+const DECLICK_ALPHA: f32 = 0.6;
+
 const MIXER_TICK: std::time::Duration = std::time::Duration::from_millis(20);
 const CAPTURE_POLL: std::time::Duration = std::time::Duration::from_millis(5);
 /// How often an encoded frame actually goes out on the wire, one at a time —
@@ -131,6 +145,43 @@ fn downmix_to_mono(frame: &[f32], channels: usize) -> f32 {
         return frame.first().copied().unwrap_or(0.0);
     }
     frame.iter().take(channels).sum::<f32>() / channels as f32
+}
+
+/// One playback-callback step of the anti-click smoothing filter: closes
+/// the gap between the last output sample and `target` (a fresh mixed
+/// sample, or `0.0` on ring-buffer underrun) by [`DECLICK_ALPHA`] instead
+/// of jumping straight there, so an underrun edge doesn't sound like a
+/// hard digital click.
+fn declick_step(current: f32, target: f32) -> f32 {
+    current + DECLICK_ALPHA * (target - current)
+}
+
+/// Sums whatever frames are ready this mixer tick and averages by how many
+/// sources actually contributed, rather than a raw sum clamped to `i16`
+/// range. A raw sum clips (hard, audible distortion that can drown out the
+/// speech itself) the moment two participants talk over each other, or even
+/// from a single loud-enough talker landing near full scale; averaging by
+/// active-source count keeps a lone speaker at full volume (dividing by 1
+/// is a no-op) while giving simultaneous speakers a proportionally smaller,
+/// clean share of the output instead of clipping. Returns `None` if nobody
+/// had a frame ready this tick (silence).
+fn mix_active_frames<'a>(
+    frames: impl Iterator<Item = &'a [i16; SAMPLES_PER_FRAME]>,
+) -> Option<[i16; SAMPLES_PER_FRAME]> {
+    let mut sum = [0i32; SAMPLES_PER_FRAME];
+    let mut active = 0i32;
+    for frame in frames {
+        active += 1;
+        for (s, f) in sum.iter_mut().zip(frame.iter()) {
+            *s += *f as i32;
+        }
+    }
+    if active == 0 {
+        return None;
+    }
+    Some(std::array::from_fn(|i| {
+        (sum[i] / active).clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    }))
 }
 
 /// Every input device name `cpal` can currently see, in host-enumeration
@@ -269,7 +320,7 @@ async fn spawn_audio_io_thread(
                         // instead, turning an instant step into a much
                         // less audible ramp.
                         let target = speaker_rx.pop().unwrap_or(0.0);
-                        declicked += 0.05 * (target - declicked);
+                        declicked = declick_step(declicked, target);
                         for s in frame {
                             *s = declicked;
                         }
@@ -860,28 +911,83 @@ async fn run_mixer_loop(
     while running.load(Ordering::Relaxed) {
         ticker.tick().await;
 
-        let mut mixed = [0i32; SAMPLES_PER_FRAME];
-        let mut any = false;
+        let mut ready = Vec::new();
         {
             let mut guard = jitter.lock().unwrap();
             for queue in guard.values_mut() {
                 if let Some(frame) = queue.pop_front() {
-                    any = true;
-                    for (m, s) in mixed.iter_mut().zip(frame.iter()) {
-                        *m += *s as i32;
-                    }
+                    ready.push(frame);
                 }
             }
         }
-        if !any {
+        let Some(mixed) = mix_active_frames(ready.iter()) else {
             continue;
-        }
+        };
 
-        let clamped: [i16; SAMPLES_PER_FRAME] =
-            std::array::from_fn(|i| mixed[i].clamp(i16::MIN as i32, i16::MAX as i32) as i16);
-        let native_samples = resampler.push_frame(&i16_frame_to_f32(&clamped));
+        let native_samples = resampler.push_frame(&i16_frame_to_f32(&mixed));
         for s in native_samples {
             let _ = speaker_tx.push(s);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mix_of_no_frames_is_silence() {
+        assert_eq!(mix_active_frames(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn mix_of_one_frame_passes_through_unchanged() {
+        let frame = std::array::from_fn(|i| (i as i16) * 3 - 400);
+        let mixed = mix_active_frames(std::iter::once(&frame)).unwrap();
+        assert_eq!(mixed, frame);
+    }
+
+    #[test]
+    fn two_full_scale_speakers_average_instead_of_clipping() {
+        let a = [i16::MAX; SAMPLES_PER_FRAME];
+        let b = [i16::MAX; SAMPLES_PER_FRAME];
+        let mixed = mix_active_frames([&a, &b].into_iter()).unwrap();
+        // A raw sum-then-clamp mixer would hard-clip both speakers flat at
+        // i16::MAX, producing the loud, harsh distortion this fix exists to
+        // avoid; averaging keeps the result at the same full-scale level
+        // each speaker was already at, no clipping introduced.
+        assert!(mixed.iter().all(|&s| s == i16::MAX));
+    }
+
+    #[test]
+    fn three_speakers_of_differing_loudness_average_without_overflow() {
+        let loud = [30_000i16; SAMPLES_PER_FRAME];
+        let quiet = [-20_000i16; SAMPLES_PER_FRAME];
+        let mid = [10_000i16; SAMPLES_PER_FRAME];
+        let mixed = mix_active_frames([&loud, &quiet, &mid].into_iter()).unwrap();
+        let expected = ((30_000i32 + -20_000 + 10_000) / 3) as i16;
+        assert!(mixed.iter().all(|&s| s == expected));
+    }
+
+    #[test]
+    fn declick_reaches_a_step_target_within_a_few_samples() {
+        let mut declicked = 0.0f32;
+        for _ in 0..8 {
+            declicked = declick_step(declicked, 1.0);
+        }
+        // Should have converged close to the target quickly (a handful of
+        // samples), not still be crawling toward it — the whole point of
+        // DECLICK_ALPHA being close to 1 rather than a slow-moving average.
+        assert!(
+            (declicked - 1.0).abs() < 0.01,
+            "declick filter converges too slowly: {declicked}"
+        );
+    }
+
+    #[test]
+    fn declick_still_smooths_a_single_step_rather_than_jumping() {
+        // Not an instant jump to the target on the very first sample —
+        // that's still a hard click, just not the one this filter targets.
+        assert_ne!(declick_step(0.0, 1.0), 1.0);
     }
 }

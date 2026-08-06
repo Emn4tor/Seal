@@ -1,3 +1,5 @@
+This file is fully AI generated using Claude on Web
+
 # Seal — what's still missing
 
 Audit of gaps in the app, verified against the actual code (not just claims — the headline finding was independently confirmed by reading the relevant source directly). `docs/THREAT_MODEL.md` already documents several known limitations (no multi-device support, Olm/Megolm session state not persisted across restart, presence is single-shot not a heartbeat, voice isn't additionally E2E-wrapped beyond Noise transport, voice is full-mesh with no size cap, voice-channel presence is group-visible, voice changer isn't a real anonymity guarantee) — those are **not** repeated below; everything here is *additional* to that list.

@@ -86,3 +86,6 @@ bytes, the Noise handshake is between the real endpoints, not the relay.
   serious voice-biometric analysis: forensic speaker identification can potentially still
   work through a simple pitch shift, and the UI (`VoiceCallPanel.tsx`) labels it that way
   rather than overselling it as real anonymity.
+
+
+This file was augmented/rephrased by Claude Codea

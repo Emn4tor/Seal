@@ -56,3 +56,5 @@ periodically; an ignored advisory today may have a fix available next month.
 This is a personal/early-stage project without a dedicated security contact yet. If you find
 something, open an issue describing the concern without exploit details in the public
 tracker, or reach the maintainer directly if you have a way to.
+
+This file was augmented/rephrased by Claude Codea

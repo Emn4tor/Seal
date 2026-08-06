@@ -9,7 +9,7 @@ use crate::dto::{AttachmentDto, ChatEventDto, ContactDto, GroupDto, MessageDto};
 /// Everything the frontend can ask the app node to do. `AppService` isn't
 /// `Sync`/shareable-behind-a-plain-mutex-across-a-long-await in a way that
 /// plays nicely with also needing to continuously poll it for network
-/// events — so instead it's owned outright by one background task (`run`),
+/// events, so instead it's owned outright by one background task (`run`),
 /// and commands reach it over this channel. This sidesteps a real deadlock
 /// risk: a `Mutex<AppService>` held across `next_event().await` (which can
 /// legitimately pend for a long time) would block every other command

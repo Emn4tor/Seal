@@ -30,9 +30,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: lts/*
           cache: 'npm'
-          cache-dependency-path: apps/desktop/package-lock.json
     
       - name: Install Linux dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -60,6 +59,8 @@ jobs:
           CARGO_BUILD_RUSTC_WRAPPER: ""
         with:
           projectPath: ./apps/desktop
+          tagName: 'v__VERSION__'
+          realeaseName: 'Draft'
           args: ${{ matrix.args }}
           releaseDraft: true
           prerelease: false

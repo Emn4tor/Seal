@@ -297,6 +297,10 @@ Each just wraps `npm run tauri build --bundles <...>` with the right flags
 and platform check; run the raw command yourself if you want a different
 bundle combination (`npx tauri build --help` from `apps/desktop`).
 
+`scripts/release.sh vX.Y.Z` bumps the version everywhere it needs to live
+and tags the commit — see [`docs/RELEASING.md`](docs/RELEASING.md). Runs on
+macOS and Linux; doesn't commit or push.
+
 ### Baking in your own "Seal" network
 
 The server-choice screen (§3) always shows three options: **Seal** (your

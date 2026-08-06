@@ -4,7 +4,11 @@ How to cut a new version of Seal: where the version number lives, how the releas
 
 ## 1. Bump the version
 
-There's no single source of truth for the version yet, so it has to be bumped in four places by hand:
+There's no single source of truth for the version yet, so it has to be bumped in four places by hand — or in one command via `scripts/release.sh` (runs on both macOS and Linux), which does exactly the manual steps below and then `git tag`s the current commit for you, deliberately stopping short of committing or pushing:
+
+```sh
+./scripts/release.sh v0.2.0
+```
 
 | File | Field | Notes |
 |---|---|---|
@@ -31,6 +35,13 @@ git push origin v0.2.0
 ```
 
 The tag you push **must match** the version you just set in `tauri.conf.json` (`v` + that version). `tauri-action` builds its own `tagName` from `v__VERSION__`, substituted from `tauri.conf.json`, so a mismatch between the pushed tag and the config version creates a confusing second tag rather than failing loudly.
+
+If you used `scripts/release.sh`, its tag was created *before* the version-bump commit above (it only ever tags whatever commit is currently checked out), so it's still pointing at the old commit at this point — move it before pushing:
+
+```sh
+git tag -f v0.2.0
+git push origin v0.2.0
+```
 
 ## 3. What the workflow does
 

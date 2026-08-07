@@ -397,6 +397,7 @@ impl VoiceCallState {
         let writers: Writers = Arc::new(AsyncMutex::new(Vec::new()));
         let connected_peers = Arc::new(Mutex::new(HashSet::new()));
         let peer_user_ids = Arc::new(Mutex::new(HashMap::new()));
+        let participants: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let connection_user_ids = Arc::new(Mutex::new(HashMap::new()));
         let connection_last_frame_at: LastFrameMap = Arc::new(Mutex::new(HashMap::new()));
         let next_connection_id = Arc::new(AtomicU64::new(0));
@@ -430,6 +431,7 @@ impl VoiceCallState {
             let writers = writers.clone();
             let next_connection_id = next_connection_id.clone();
             let peer_user_ids = peer_user_ids.clone();
+            let participants = participants.clone();
             let connection_user_ids = connection_user_ids.clone();
             let connection_last_frame_at = connection_last_frame_at.clone();
             let running = running.clone();
@@ -445,17 +447,30 @@ impl VoiceCallState {
                     let Some((peer_id, stream)) = incoming.next().await else {
                         break;
                     };
-                    let user_id = peer_user_ids.lock().unwrap().get(&peer_id).cloned();
-                    register_connection(
-                        stream,
-                        user_id,
-                        &jitter,
-                        &writers,
-                        &connection_user_ids,
-                        &connection_last_frame_at,
-                        &next_connection_id,
-                    )
-                    .await;
+                    match resolve_authorized_participant(peer_id, &peer_user_ids, &participants)
+                        .await
+                    {
+                        Some(user_id) => {
+                            register_connection(
+                                stream,
+                                Some(user_id),
+                                &jitter,
+                                &writers,
+                                &connection_user_ids,
+                                &connection_last_frame_at,
+                                &next_connection_id,
+                            )
+                            .await;
+                        }
+                        None => {
+                            tracing::warn!(
+                                %peer_id,
+                                "rejecting an inbound voice stream from a peer who isn't a \
+                                 known participant of this call"
+                            );
+                            drop(stream);
+                        }
+                    }
                 }
             }));
         }
@@ -504,7 +519,7 @@ impl VoiceCallState {
             hear_self,
             mic_threshold_db,
             local_speaking,
-            participants: Arc::new(Mutex::new(Vec::new())),
+            participants,
             connected_peers,
             peer_user_ids,
             connection_user_ids,
@@ -705,6 +720,44 @@ impl Drop for VoiceCallState {
             task.abort();
         }
     }
+}
+
+/// How many times the acceptor retries resolving an inbound peer's
+/// identity before giving up and rejecting the stream, and how long it
+/// waits between attempts. `peer_user_ids` is only populated once this
+/// side's own `connect_voice_peer` resolves the same participant's
+/// presence, an independent async directory lookup that can legitimately
+/// still be in flight when their stream arrives first; a genuinely
+/// unauthorized peer will still never resolve no matter how long this
+/// waits, so a short bounded retry only closes a benign race, not the
+/// actual check.
+const ACCEPTOR_IDENTITY_RESOLVE_ATTEMPTS: u32 = 10;
+const ACCEPTOR_IDENTITY_RESOLVE_DELAY: Duration = Duration::from_millis(200);
+
+/// Resolves `peer_id` to a user_id and confirms that user_id is currently
+/// an expected participant of this call, rejecting (`None`) an inbound
+/// voice stream from anyone else. Without this, `net::accept_voice_streams`
+/// would happily mix in audio from any peer that can dial this node at
+/// all, not just the people actually invited to this call.
+async fn resolve_authorized_participant(
+    peer_id: PeerId,
+    peer_user_ids: &Arc<Mutex<HashMap<PeerId, String>>>,
+    participants: &Arc<Mutex<Vec<String>>>,
+) -> Option<String> {
+    for attempt in 0..ACCEPTOR_IDENTITY_RESOLVE_ATTEMPTS {
+        let user_id = peer_user_ids.lock().unwrap().get(&peer_id).cloned();
+        if let Some(user_id) = user_id {
+            return participants
+                .lock()
+                .unwrap()
+                .contains(&user_id)
+                .then_some(user_id);
+        }
+        if attempt + 1 < ACCEPTOR_IDENTITY_RESOLVE_ATTEMPTS {
+            tokio::time::sleep(ACCEPTOR_IDENTITY_RESOLVE_DELAY).await;
+        }
+    }
+    None
 }
 
 async fn register_connection(
@@ -934,6 +987,39 @@ async fn run_mixer_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn resolve_authorized_participant_accepts_a_known_expected_peer() {
+        let peer_id = PeerId::random();
+        let peer_user_ids = Arc::new(Mutex::new(HashMap::from([(peer_id, "alice".to_string())])));
+        let participants = Arc::new(Mutex::new(vec!["alice".to_string()]));
+        let resolved = resolve_authorized_participant(peer_id, &peer_user_ids, &participants).await;
+        assert_eq!(resolved, Some("alice".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_authorized_participant_rejects_a_resolved_but_uninvited_peer() {
+        let peer_id = PeerId::random();
+        let peer_user_ids = Arc::new(Mutex::new(HashMap::from([(
+            peer_id,
+            "mallory".to_string(),
+        )])));
+        // "mallory" resolves to a real, known identity, just not one this
+        // call actually expects: the injection scenario this check exists
+        // to close, not a lookup failure.
+        let participants = Arc::new(Mutex::new(vec!["alice".to_string(), "bob".to_string()]));
+        let resolved = resolve_authorized_participant(peer_id, &peer_user_ids, &participants).await;
+        assert_eq!(resolved, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_authorized_participant_rejects_a_peer_whose_identity_never_resolves() {
+        let peer_id = PeerId::random();
+        let peer_user_ids = Arc::new(Mutex::new(HashMap::new()));
+        let participants = Arc::new(Mutex::new(vec!["alice".to_string()]));
+        let resolved = resolve_authorized_participant(peer_id, &peer_user_ids, &participants).await;
+        assert_eq!(resolved, None);
+    }
 
     #[test]
     fn mix_of_no_frames_is_silence() {

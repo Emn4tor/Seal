@@ -25,6 +25,7 @@ async fn two_nodes_establish_a_voice_call_and_track_presence() {
     let mut node_b = ChatNode::new(Identity::generate()).expect("build node b");
 
     let peer_a = node_a.local_peer_id();
+    let peer_b = node_b.local_peer_id();
     let control_a = node_a.voice_control();
     let control_b = node_b.voice_control();
 
@@ -68,6 +69,13 @@ async fn two_nodes_establish_a_voice_call_and_track_presence() {
     );
     assert!(call_a.note_presence("bob", false));
     assert!(call_a.participants().is_empty());
+
+    // The acceptor only registers an inbound stream from a peer it already
+    // knows is an expected participant (see `resolve_authorized_participant`
+    // in `voice.rs`). A real call always learns this via `connect_voice_peer`
+    // before dialing, so the test has to set up the same two facts by hand.
+    call_a.note_presence("alice", true);
+    call_a.note_peer_identity(peer_b, "alice".into());
 
     // Real mesh dial + libp2p-stream negotiation between two live swarms.
     tokio::time::timeout(

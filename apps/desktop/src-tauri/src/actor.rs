@@ -35,6 +35,18 @@ pub enum Command {
         user_id: String,
         respond_to: oneshot::Sender<Result<(), String>>,
     },
+    BlockContact {
+        user_id: String,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
+    UnblockContact {
+        user_id: String,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
+    IsContactBlocked {
+        user_id: String,
+        respond_to: oneshot::Sender<Result<bool, String>>,
+    },
     ListContacts {
         respond_to: oneshot::Sender<Result<Vec<ContactDto>, String>>,
     },
@@ -224,6 +236,30 @@ impl ActorHandle {
 
     pub async fn remove_contact(&self, user_id: String) -> Result<(), String> {
         self.call(|respond_to| Command::RemoveContact {
+            user_id,
+            respond_to,
+        })
+        .await?
+    }
+
+    pub async fn block_contact(&self, user_id: String) -> Result<(), String> {
+        self.call(|respond_to| Command::BlockContact {
+            user_id,
+            respond_to,
+        })
+        .await?
+    }
+
+    pub async fn unblock_contact(&self, user_id: String) -> Result<(), String> {
+        self.call(|respond_to| Command::UnblockContact {
+            user_id,
+            respond_to,
+        })
+        .await?
+    }
+
+    pub async fn is_contact_blocked(&self, user_id: String) -> Result<bool, String> {
+        self.call(|respond_to| Command::IsContactBlocked {
             user_id,
             respond_to,
         })
@@ -576,6 +612,15 @@ fn reject_not_initialized(cmd: Command) {
         Command::RemoveContact { respond_to, .. } => {
             let _ = respond_to.send(Err(err()));
         }
+        Command::BlockContact { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::UnblockContact { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::IsContactBlocked { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
         Command::ListContacts { respond_to } => {
             let _ = respond_to.send(Err(err()));
         }
@@ -688,6 +733,26 @@ async fn handle_command(app: &AppHandle, service: &mut AppService, cmd: Command)
         } => {
             let result = service.remove_contact(&user_id).map_err(|e| e.to_string());
             let _ = respond_to.send(result);
+        }
+        Command::BlockContact {
+            user_id,
+            respond_to,
+        } => {
+            let result = service.block_contact(&user_id).map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
+        Command::UnblockContact {
+            user_id,
+            respond_to,
+        } => {
+            let result = service.unblock_contact(&user_id).map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
+        Command::IsContactBlocked {
+            user_id,
+            respond_to,
+        } => {
+            let _ = respond_to.send(Ok(service.is_contact_blocked(&user_id)));
         }
         Command::ListContacts { respond_to } => {
             let result = service

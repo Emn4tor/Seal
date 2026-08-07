@@ -62,6 +62,15 @@ CREATE TABLE IF NOT EXISTS contacts (
     last_seen_at INTEGER
 );
 
+-- Users whose direct messages we no longer want to receive. Kept separate
+-- from `contacts` on purpose: it needs to outlive contact removal (and any
+-- self-heal that would otherwise silently re-add the sender as a contact
+-- on their next message) rather than share that row's lifecycle.
+CREATE TABLE IF NOT EXISTS blocked_contacts (
+    user_id TEXT PRIMARY KEY,
+    blocked_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS groups (
     group_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

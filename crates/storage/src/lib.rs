@@ -1,3 +1,4 @@
+pub mod blocked_store;
 pub mod contacts_store;
 pub mod crypto;
 pub mod db;

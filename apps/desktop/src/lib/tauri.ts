@@ -37,6 +37,9 @@ export const api = {
   removeAccount: (accountId: string) => invoke<void>("remove_account", { accountId }),
   addContact: (userId: string) => invoke<void>("add_contact", { userId }),
   removeContact: (userId: string) => invoke<void>("remove_contact", { userId }),
+  blockContact: (userId: string) => invoke<void>("block_contact", { userId }),
+  unblockContact: (userId: string) => invoke<void>("unblock_contact", { userId }),
+  isContactBlocked: (userId: string) => invoke<boolean>("is_contact_blocked", { userId }),
   listContacts: () => invoke<Contact[]>("list_contacts"),
   sendDirectMessage: (peerUserId: string, body: string, attachment: Attachment | null) =>
     invoke<void>("send_direct_message", { peerUserId, body, attachment }),

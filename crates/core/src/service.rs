@@ -476,6 +476,25 @@ impl AppService {
         Ok(())
     }
 
+    /// Blocks a user's direct messages, independent of and outliving
+    /// contact removal: a removed contact who messages again gets
+    /// silently self-healed back in (see `next_event`'s `DirectMessage`
+    /// handling), a blocked one doesn't, since that check runs first and
+    /// short-circuits before the self-heal ever runs.
+    pub fn block_contact(&mut self, user_id: &str) -> anyhow::Result<()> {
+        self.store.block_user(user_id, now())?;
+        Ok(())
+    }
+
+    pub fn unblock_contact(&mut self, user_id: &str) -> anyhow::Result<()> {
+        self.store.unblock_user(user_id)?;
+        Ok(())
+    }
+
+    pub fn is_contact_blocked(&self, user_id: &str) -> bool {
+        self.store.is_blocked(user_id).unwrap_or(false)
+    }
+
     /// Re-fetches this contact's presence from the directory whenever we
     /// don't have a live connection to them: a peer's address is ephemeral
     /// session data (see `add_contact_by_user_id`) that changes on every
@@ -618,6 +637,7 @@ impl AppService {
             )
             .await?;
         self.store.delete_group(group_id)?;
+        self.node.leave_group_topic(group_id);
         Ok(())
     }
 
@@ -867,6 +887,10 @@ impl AppService {
                     ref body,
                     ref attachment,
                 } => {
+                    if self.is_contact_blocked(from) {
+                        tracing::debug!(%from, "dropping a direct message from a blocked user");
+                        continue;
+                    }
                     let _ = self.store.insert_message(
                         from,
                         from,

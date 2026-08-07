@@ -266,6 +266,30 @@ pub async fn remove_contact(
 }
 
 #[tauri::command]
+pub async fn block_contact(
+    state: State<'_, AccountManager>,
+    user_id: String,
+) -> Result<(), String> {
+    state.current().await?.block_contact(user_id).await
+}
+
+#[tauri::command]
+pub async fn unblock_contact(
+    state: State<'_, AccountManager>,
+    user_id: String,
+) -> Result<(), String> {
+    state.current().await?.unblock_contact(user_id).await
+}
+
+#[tauri::command]
+pub async fn is_contact_blocked(
+    state: State<'_, AccountManager>,
+    user_id: String,
+) -> Result<bool, String> {
+    state.current().await?.is_contact_blocked(user_id).await
+}
+
+#[tauri::command]
 pub async fn list_contacts(state: State<'_, AccountManager>) -> Result<Vec<ContactDto>, String> {
     state.current().await?.list_contacts().await
 }

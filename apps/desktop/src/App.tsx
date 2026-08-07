@@ -460,15 +460,61 @@ export default function App() {
   }, [userId]);
 
   useEffect(() => {
-    if (!selected) return;
-    const id = selected.kind === "dm" ? selected.userId : `${selected.groupId}:${selected.channelId}`;
+    const id = conversationIdOf(selected);
+    if (!id) return;
     setMessagesError(null);
+    let cancelled = false;
+    // Snapshotting the count before the fetch starts, and re-checking it
+    // once the fetch resolves, catches a message arriving live (via
+    // `appendMessage` from a chat event) while this fetch was still in
+    // flight: without this, the fetch's now-stale snapshot would overwrite
+    // state that's already more current than what it fetched.
+    const countBeforeFetch = useChatStore.getState().messagesByConversation[id]?.length ?? 0;
     api
       .listMessages(id)
-      .then((msgs) => setMessages(id, msgs))
-      .catch((err) => setMessagesError(String(err)));
+      .then((msgs) => {
+        if (cancelled) return;
+        const countNow = useChatStore.getState().messagesByConversation[id]?.length ?? 0;
+        if (countNow > countBeforeFetch) return;
+        setMessages(id, msgs);
+      })
+      .catch((err) => {
+        if (!cancelled) setMessagesError(String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
+
+  const [blockedPeer, setBlockedPeer] = useState<{ userId: string; blocked: boolean } | null>(null);
+  useEffect(() => {
+    const dmUserId = selected?.kind === "dm" ? selected.userId : null;
+    if (!dmUserId) {
+      setBlockedPeer(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .isContactBlocked(dmUserId)
+      .then((blocked) => {
+        if (!cancelled) setBlockedPeer({ userId: dmUserId, blocked });
+      })
+      .catch(() => {
+        if (!cancelled) setBlockedPeer({ userId: dmUserId, blocked: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected]);
+
+  async function handleToggleBlock() {
+    if (!blockedPeer) return;
+    const { userId, blocked } = blockedPeer;
+    if (blocked) await api.unblockContact(userId);
+    else await api.blockContact(userId);
+    setBlockedPeer({ userId, blocked: !blocked });
+  }
 
   // Previews who's in each of this group's voice channels before the user
   // joins one — live updates after this come through the
@@ -812,6 +858,10 @@ export default function App() {
           loadError={messagesError}
           placeholder="No messages yet. Say hello — it's sealed before it leaves this device."
           onCall={selected?.kind === "dm" ? () => handleStartCall(selected.userId) : undefined}
+          blocked={
+            selected?.kind === "dm" && blockedPeer?.userId === selected.userId ? blockedPeer.blocked : undefined
+          }
+          onToggleBlock={selected?.kind === "dm" ? handleToggleBlock : undefined}
           onSend={async (body, attachment) => {
             if (selected?.kind === "dm") await api.sendDirectMessage(selected.userId, body, attachment);
             else if (selected?.kind === "group")

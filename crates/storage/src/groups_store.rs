@@ -115,6 +115,19 @@ impl LocalStore {
             .collect()
     }
 
+    /// Whether `user_id` is currently on `group_id`'s locally cached
+    /// roster. Used to reject group content from a sender who isn't an
+    /// actual member before it's stored or shown, not just to render a
+    /// member list.
+    pub fn is_group_member(&self, group_id: &str, user_id: &str) -> Result<bool, StorageError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM group_members WHERE group_id = ?1 AND user_id = ?2",
+            params![group_id, user_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     fn group_members(&self, group_id: &str) -> Result<Vec<StoredGroupMember>, StorageError> {
         let mut stmt = self
             .conn

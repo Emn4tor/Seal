@@ -948,7 +948,7 @@ export default function App() {
           title="Up To Date"
           description="There is no new update available, nothing to worry about."
           submitLabel="Ok"
-          onSubmit={(_)=> new Promise<void>(()=>{setOpenModal(null)})}
+          onSubmit={async () => {}}
           onClose={() => setOpenModal(null)}
         />
       )}

@@ -152,12 +152,13 @@ function UpdateIcon({ className }: { className?: string }) {
   );
 }
 
-function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+function Toggle({ on, onClick, disabled }: { on: boolean; onClick: () => void; disabled?: boolean }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       aria-pressed={on}
-      className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-90 ${
+      className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100 ${
         on ? "bg-verdigris-wash text-verdigris" : "bg-surface-raised text-text-muted"
       }`}
     >
@@ -251,12 +252,14 @@ export function SettingsPanel({
       try {
         const version = await getVersion();
         setAppVersion(version);
-      } catch (error) {
+      } catch (_error) {
         notify("Version Checking Failed", "Error while getting app version.", {variant:"error"});
       }
     }
 
     fetchVersion();
+    // Once when the panel opens only, not whenever `notify` is recreated.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -465,13 +468,13 @@ export function SettingsPanel({
 
   async function checkUpdates() {
     try {
-      let updateAvailable = await checkForUpdates();
+      const updateAvailable = await checkForUpdates();
       if (updateAvailable) {
         setOpenModal("update-available");
       } else {
         setOpenModal("up-to-date");
       }
-    } catch (e) {
+    } catch (_e) {
       notify("Update Checking Failed", "Update endpoint did not respond with a successful status code.", {variant:"error"})
     }
   }
@@ -959,7 +962,11 @@ export function SettingsPanel({
                         Automatically download and install updates on startup.
                       </p>
                     </div>
-                    <Toggle on={autoInstallUpdates} onClick={handleToggleUpdateAutoInstall} />
+                    <Toggle
+                      on={autoInstallUpdates}
+                      onClick={handleToggleUpdateAutoInstall}
+                      disabled={!autoCheckUpdates}
+                    />
                   </div>
                 </Section>
 

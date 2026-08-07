@@ -451,6 +451,18 @@ impl ChatNode {
             .subscribe(&group_topic(group_id));
     }
 
+    /// The other half of `join_group_topic`. Call this on leaving a
+    /// group, or its gossipsub subscription (and so message delivery)
+    /// stays live forever, silently resurrecting an orphaned conversation
+    /// locally with nothing left pointing at it.
+    pub fn leave_group_topic(&mut self, group_id: &str) {
+        let _ = self
+            .swarm
+            .behaviour_mut()
+            .gossipsub
+            .unsubscribe(&group_topic(group_id));
+    }
+
     /// Whether we already have our own outbound Megolm session for this
     /// group — i.e. whether we can actually send anything to it (not just
     /// receive), regardless of whether we created it or joined later.

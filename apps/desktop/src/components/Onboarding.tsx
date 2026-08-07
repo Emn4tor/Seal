@@ -120,14 +120,14 @@ export function Onboarding({ mode = "first", onSubmit, onCancel }: OnboardingPro
             >
               {busy ? "Generating your keys…" : isAdd ? "Add account" : "Get started"}
             </button>
-            {isAdd && onCancel && (
+            {onCancel && (
               <button
                 type="button"
                 onClick={onCancel}
                 disabled={busy}
                 className="mt-2 w-full rounded-md py-2 text-sm text-text-muted hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Cancel
+                {isAdd ? "Cancel" : "Change server"}
               </button>
             )}
             <p className="mt-3 text-xs text-text-faint">

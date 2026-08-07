@@ -30,8 +30,21 @@ export function ServerChoice({ onChosen }: ServerChoiceProps) {
     const chosen =
       mode === "seal" ? officialUrl! : mode === "local" ? EMBEDDED_SERVER_SENTINEL : customUrl.trim();
     if (!chosen || busy) return;
-    setBusy(true);
     setError(null);
+    // A malformed custom URL (missing scheme, a typo, plain garbage) used
+    // to sail through here and only fail later, on the name-entry screen,
+    // as a raw "builder error" with no way back to fix it. Catching it
+    // here, right where it was typed, means a real error message and
+    // nothing to undo.
+    if (mode === "custom" && chosen !== EMBEDDED_SERVER_SENTINEL) {
+      try {
+        new URL(chosen);
+      } catch {
+        setError("That doesn't look like a valid URL. Check for a typo, and make sure it starts with https:// or http://.");
+        return;
+      }
+    }
+    setBusy(true);
     try {
       await onChosen(chosen);
     } catch (err) {

@@ -733,7 +733,13 @@ export default function App() {
         mode={onboardingMode}
         onSubmit={handleCreateAccount}
         onCancel={
-          onboardingMode === "add" ? () => setPhase(onboardingReturnPhase) : undefined
+          onboardingMode === "add"
+            ? () => setPhase(onboardingReturnPhase)
+            : // First-run onboarding: a bad server URL (typo, unreachable
+              // host) only ever surfaces here, once "Get started" is
+              // pressed. Without a way back, that was a dead end with no
+              // recovery but restarting the app.
+              () => setPhase("choose-server")
         }
       />
     );

@@ -273,6 +273,15 @@ export function SettingsPanel({
     if (!recordingShortcut) return;
     function handleKeyDown(e: KeyboardEvent) {
       e.preventDefault();
+      // Without this, the same keydown also reaches `useModalEscape`'s
+      // bubble-phase listener on `document`. Pressing Escape to cancel
+      // the recording used to also close the whole Settings panel out
+      // from under it.
+      e.stopPropagation();
+      if (e.code === "Escape") {
+        setRecordingShortcut(false);
+        return;
+      }
       const accelerator = acceleratorFromKeyEvent(e);
       if (!accelerator) return; // only modifiers held so far, keep listening
       setPttShortcut(accelerator);

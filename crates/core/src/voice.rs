@@ -1076,4 +1076,188 @@ mod tests {
         // that's still a hard click, just not the one this filter targets.
         assert_ne!(declick_step(0.0, 1.0), 1.0);
     }
+
+    /// Diagnostic for a reported "nobody can hear anything" bug: exercises
+    /// the *real* encode -> pace -> network -> decode -> mix pipeline
+    /// (`run_encode_loop`, `run_send_pacer_loop`, `run_reader_loop`,
+    /// `run_mixer_loop`, `register_connection`), over a real TCP loopback
+    /// libp2p connection between two nodes, everything `VoiceCallState`
+    /// wires together, minus only the real cpal device thread (replaced
+    /// with directly-driven `rtrb` buffers so this runs headless in CI; see
+    /// the `verify-networking-bugs-via-rust-harness` project convention).
+    /// A loud synthetic tone goes in one side's "microphone" ring buffer at
+    /// a realistic device rate (48kHz, not the internal 16kHz, so any
+    /// resample-ratio bug would show up too); if the pipeline is healthy,
+    /// real decoded, mixed, resampled-back audio comes out the other side's
+    /// "speaker" ring buffer.
+    #[tokio::test]
+    async fn synthetic_speech_flows_end_to_end_through_encode_network_and_mixer() {
+        use crate::node::ChatNode;
+        use identity::Identity;
+        use libp2p::Multiaddr;
+        use libp2p::core::multiaddr::Protocol;
+        use std::str::FromStr;
+
+        const DEVICE_RATE: u32 = 48_000;
+
+        let mut node_a = ChatNode::new(Identity::generate()).expect("build node a");
+        let mut node_b = ChatNode::new(Identity::generate()).expect("build node b");
+        let peer_a = node_a.local_peer_id();
+        let mut control_a = node_a.voice_control();
+        let mut control_b = node_b.voice_control();
+
+        node_a
+            .listen_on(Multiaddr::from_str("/ip4/127.0.0.1/tcp/0").unwrap())
+            .expect("listen on a");
+        let addr_a = node_a.wait_for_listen_addr().await;
+        node_b
+            .dial(addr_a.with(Protocol::P2p(peer_a)))
+            .expect("dial a from b");
+
+        tokio::spawn(async move {
+            loop {
+                node_a.next_event().await;
+            }
+        });
+        tokio::spawn(async move {
+            loop {
+                node_b.next_event().await;
+            }
+        });
+
+        let running = Arc::new(AtomicBool::new(true));
+
+        // Receiver (A, the listener): real reader-loop + mixer-loop, same
+        // wiring `VoiceCallState::start` does for every participant.
+        let jitter_b: JitterMap = Arc::new(Mutex::new(HashMap::new()));
+        let writers_b: Writers = Arc::new(AsyncMutex::new(Vec::new()));
+        let connection_user_ids_b = Arc::new(Mutex::new(HashMap::new()));
+        let connection_last_frame_at_b: LastFrameMap = Arc::new(Mutex::new(HashMap::new()));
+        let next_connection_id_b = Arc::new(AtomicU64::new(0));
+        let mut incoming =
+            net::accept_voice_streams(&mut control_a).expect("register inbound voice acceptor");
+        {
+            let jitter_b = jitter_b.clone();
+            let writers_b = writers_b.clone();
+            let connection_user_ids_b = connection_user_ids_b.clone();
+            let connection_last_frame_at_b = connection_last_frame_at_b.clone();
+            let next_connection_id_b = next_connection_id_b.clone();
+            tokio::spawn(async move {
+                if let Some((_, stream)) = incoming.next().await {
+                    register_connection(
+                        stream,
+                        Some("alice".into()),
+                        &jitter_b,
+                        &writers_b,
+                        &connection_user_ids_b,
+                        &connection_last_frame_at_b,
+                        &next_connection_id_b,
+                    )
+                    .await;
+                }
+            });
+        }
+        let (speaker_tx, mut speaker_rx) = rtrb::RingBuffer::<f32>::new(RING_BUFFER_CAPACITY);
+        tokio::spawn(run_mixer_loop(
+            jitter_b.clone(),
+            speaker_tx,
+            DEVICE_RATE,
+            running.clone(),
+        ));
+
+        // Sender (B, the dialer): open the voice stream to A, same
+        // direction as the underlying TCP dial above, matching how a real
+        // call always has the stream-opener be a side that already knows a
+        // route to the other peer. Then the real encode + send-pacer
+        // loops, fed synthetic mic audio through the same rtrb ring buffer
+        // real cpal capture uses, nothing downstream of this point can
+        // tell the difference.
+        let stream = net::open_voice_stream(&mut control_b, peer_a)
+            .await
+            .expect("failed to open a voice stream from b to a");
+        let jitter_a: JitterMap = Arc::new(Mutex::new(HashMap::new()));
+        let writers_a: Writers = Arc::new(AsyncMutex::new(Vec::new()));
+        let connection_user_ids_a = Arc::new(Mutex::new(HashMap::new()));
+        let connection_last_frame_at_a: LastFrameMap = Arc::new(Mutex::new(HashMap::new()));
+        let next_connection_id_a = Arc::new(AtomicU64::new(0));
+        register_connection(
+            stream,
+            None,
+            &jitter_a,
+            &writers_a,
+            &connection_user_ids_a,
+            &connection_last_frame_at_a,
+            &next_connection_id_a,
+        )
+        .await;
+
+        let (mut mic_tx, mic_rx) = rtrb::RingBuffer::<f32>::new(RING_BUFFER_CAPACITY);
+        let self_monitor_id = u64::MAX;
+        jitter_a
+            .lock()
+            .unwrap()
+            .insert(self_monitor_id, VecDeque::new());
+        tokio::spawn(run_encode_loop(
+            mic_rx,
+            DEVICE_RATE,
+            Arc::new(AtomicBool::new(false)), // muted
+            Arc::new(AtomicBool::new(false)), // changer_enabled
+            Arc::new(AtomicBool::new(false)), // hear_self
+            Arc::new(Mutex::new(-90.0f32)),   // mic_threshold_db: wide open
+            Arc::new(AtomicBool::new(false)), // local_speaking
+            {
+                let outbound: OutboundQueue = Arc::new(Mutex::new(VecDeque::new()));
+                tokio::spawn(run_send_pacer_loop(
+                    outbound.clone(),
+                    writers_a,
+                    running.clone(),
+                ));
+                outbound
+            },
+            jitter_a,
+            self_monitor_id,
+            running.clone(),
+        ));
+
+        // Feed ~1s of a loud 220Hz tone into the "microphone", arriving
+        // incrementally like real cpal capture rather than all at once.
+        let total_samples = DEVICE_RATE as usize;
+        let chunk = (DEVICE_RATE as usize) / 200; // 5ms, matching CAPTURE_POLL's cadence
+        let mut sent = 0usize;
+        while sent < total_samples {
+            for i in 0..chunk.min(total_samples - sent) {
+                let t = (sent + i) as f32 / DEVICE_RATE as f32;
+                let sample = 0.8 * (2.0 * std::f32::consts::PI * 220.0 * t).sin();
+                let _ = mic_tx.push(sample);
+            }
+            sent += chunk;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // Let the pacer/mixer drain the tail end.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        running.store(false, Ordering::Relaxed);
+
+        let mut received = Vec::new();
+        while let Ok(s) = speaker_rx.pop() {
+            received.push(s);
+        }
+
+        assert!(
+            !received.is_empty(),
+            "receiver's mixer produced zero samples: no audio reached the other \
+             participant at all, reproducing the reported total-silence bug"
+        );
+        let peak = received.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(
+            peak > 0.05,
+            "receiver's mixer output was essentially silent (peak {peak}) even \
+             though a loud tone was fed into the sender's mic"
+        );
+        assert!(
+            received.len() > (DEVICE_RATE as usize) / 10,
+            "received suspiciously little audio ({} samples): pipeline is \
+             dropping far more than it delivers",
+            received.len()
+        );
+    }
 }

@@ -10,6 +10,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
+tracing.workspace = true
 
 # Plain SQLite — no SQLCipher/OpenSSL. Sensitive columns (identity/session
 # pickles, message bodies) are individually encrypted at the application
@@ -23,3 +24,4 @@ base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
+rusqlite = { version = "0.40", features = ["bundled"] }

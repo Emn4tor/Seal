@@ -94,36 +94,61 @@ impl LocalStore {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        rows.into_iter()
-            .map(|(sender_user_id, body_blob, sent_at)| {
-                let json_bytes = decrypt_blob(&self.kek, &body_blob)?;
-                let on_disk: MessageOnDisk = serde_json::from_slice(&json_bytes).map_err(|e| {
-                    StorageError::Crypto(format!("stored message was not valid: {e}"))
+        // One tampered/bit-rotted row used to fail the whole conversation's
+        // history via a short-circuiting `collect`, even though every other
+        // row was perfectly fine. Best-effort instead: skip and log just
+        // the bad one, same "degrade, don't fail outright" philosophy as
+        // this crate's other local-data reads.
+        let messages = rows
+            .into_iter()
+            .filter_map(|(sender_user_id, body_blob, sent_at)| {
+                match Self::decode_message(&self.kek, conversation_id, &sender_user_id, &body_blob, sent_at) {
+                    Ok(message) => Some(message),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            conversation_id,
+                            sent_at,
+                            "skipping a message that failed to decode, rest of the conversation still loads"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+        Ok(messages)
+    }
+
+    fn decode_message(
+        kek: &[u8; 32],
+        conversation_id: &str,
+        sender_user_id: &str,
+        body_blob: &[u8],
+        sent_at: i64,
+    ) -> Result<StoredMessage, StorageError> {
+        let json_bytes = decrypt_blob(kek, body_blob)?;
+        let on_disk: MessageOnDisk = serde_json::from_slice(&json_bytes)
+            .map_err(|e| StorageError::Crypto(format!("stored message was not valid: {e}")))?;
+        let attachment = on_disk
+            .attachment
+            .map(|a| -> Result<StoredAttachment, StorageError> {
+                let data = STANDARD.decode(&a.data_base64).map_err(|e| {
+                    StorageError::Crypto(format!("stored attachment base64 was invalid: {e}"))
                 })?;
-                let attachment = on_disk
-                    .attachment
-                    .map(|a| -> Result<StoredAttachment, StorageError> {
-                        let data = STANDARD.decode(&a.data_base64).map_err(|e| {
-                            StorageError::Crypto(format!(
-                                "stored attachment base64 was invalid: {e}"
-                            ))
-                        })?;
-                        Ok(StoredAttachment {
-                            filename: a.filename,
-                            mime_type: a.mime_type,
-                            exif_stripped: a.exif_stripped,
-                            data,
-                        })
-                    })
-                    .transpose()?;
-                Ok(StoredMessage {
-                    conversation_id: conversation_id.to_string(),
-                    sender_user_id,
-                    body: on_disk.body,
-                    attachment,
-                    sent_at,
+                Ok(StoredAttachment {
+                    filename: a.filename,
+                    mime_type: a.mime_type,
+                    exif_stripped: a.exif_stripped,
+                    data,
                 })
             })
-            .collect()
+            .transpose()?;
+        Ok(StoredMessage {
+            conversation_id: conversation_id.to_string(),
+            sender_user_id: sender_user_id.to_string(),
+            body: on_disk.body,
+            attachment,
+            sent_at,
+        })
     }
 }

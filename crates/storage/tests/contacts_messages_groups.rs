@@ -63,6 +63,42 @@ fn messages_round_trip_and_are_encrypted_at_rest() {
 }
 
 #[test]
+fn one_corrupted_message_does_not_break_the_rest_of_the_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("db.sqlite3");
+    let store = LocalStore::open(&db_path, [9u8; 32]).unwrap();
+
+    store
+        .insert_message("conv-1", "alice", "good message one", None, 100)
+        .unwrap();
+    store
+        .insert_message("conv-1", "bob", "this one gets corrupted", None, 101)
+        .unwrap();
+    store
+        .insert_message("conv-1", "alice", "good message two", None, 102)
+        .unwrap();
+    drop(store);
+
+    let raw = rusqlite::Connection::open(&db_path).unwrap();
+    raw.execute(
+        "UPDATE messages SET body_blob = ?1 WHERE sent_at = 101",
+        rusqlite::params![vec![0xffu8; 16]],
+    )
+    .unwrap();
+    drop(raw);
+
+    let store = LocalStore::open(&db_path, [9u8; 32]).unwrap();
+    let messages = store.list_messages("conv-1").unwrap();
+    assert_eq!(
+        messages.len(),
+        2,
+        "the two uncorrupted messages should still load despite the bad row between them"
+    );
+    assert_eq!(messages[0].body, "good message one");
+    assert_eq!(messages[1].body, "good message two");
+}
+
+#[test]
 fn message_with_attachment_round_trips_and_stays_encrypted_at_rest() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("db.sqlite3");

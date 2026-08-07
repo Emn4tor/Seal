@@ -15,3 +15,7 @@ dist-ssr
 # stray uncommitted local experiments, moved out of the real source tree
 # rather than deleted outright — see todo.md
 /.abandoned-experiments
+
+/CLAUDE.md
+/.claude/settings.json
+/.claude/skills/

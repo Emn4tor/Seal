@@ -221,6 +221,10 @@ export function VoiceCallPanel({
     try {
       await api.setMicMuted(next);
     } catch (err) {
+      // Back to what it actually is, otherwise the button can keep
+      // showing "muted" (or not) while the backend call that was supposed
+      // to make that true actually failed.
+      setMuted(!next);
       setError(String(err));
     }
   }
@@ -231,6 +235,7 @@ export function VoiceCallPanel({
     try {
       await api.setVoiceChangerEnabled(next);
     } catch (err) {
+      setChangerEnabled(!next);
       setError(String(err));
     }
   }
@@ -241,6 +246,7 @@ export function VoiceCallPanel({
     try {
       await api.setHearSelf(next);
     } catch (err) {
+      setHearSelf(!next);
       setError(String(err));
     }
   }

@@ -158,6 +158,7 @@ export function CallOverlay({ call, peerDisplayName, onAccept, onDecline, onEnd 
     try {
       await api.setMicMuted(next);
     } catch (err) {
+      setMuted(!next);
       setError(String(err));
     }
   }

@@ -237,6 +237,7 @@ export function SettingsPanel({
   const [preferredInput, setPreferredInput] = useState(getPreferredInputDevice);
   const [preferredOutput, setPreferredOutput] = useState(getPreferredOutputDevice);
   const [devicesError, setDevicesError] = useState<string | null>(null);
+  const [thresholdError, setThresholdError] = useState<string | null>(null);
 
   const [autoCheckUpdates, setAutoCheckUpdates] = useState(getUpdateAutoCheckEnabled);
   const [autoInstallUpdates, setAutoInstallUpdates] = useState(getUpdateAutoInstallEnabled);
@@ -296,7 +297,8 @@ export function SettingsPanel({
   function handleThresholdChange(db: number) {
     setMicThresholdDb(db);
     saveMicThresholdDb(db);
-    api.setMicThresholdDb(db).catch(() => {});
+    setThresholdError(null);
+    api.setMicThresholdDb(db).catch((err) => setThresholdError(String(err)));
   }
 
   function handleTogglePtt() {
@@ -787,6 +789,7 @@ export function SettingsPanel({
                       onChange={(e) => handleThresholdChange(Number(e.target.value))}
                       className="mt-2 w-full accent-verdigris"
                     />
+                    {thresholdError && <p className="mt-2 text-xs text-danger">{thresholdError}</p>}
                   </div>
 
                   <div className="mt-5 border-t border-border pt-4">

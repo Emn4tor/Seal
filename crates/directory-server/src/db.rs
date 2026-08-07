@@ -21,6 +21,15 @@ pub fn open(path: &Path) -> anyhow::Result<Connection> {
 
 const NONCE_WINDOW_SECS: i64 = 600;
 
+/// A generous cap on how many signed requests one identity can make within
+/// `NONCE_WINDOW_SECS`, piggybacking on the nonce table every signed write
+/// already inserts into rather than needing a new schema, middleware, or
+/// per-connection state to rate-limit at all. Not meant to bound legitimate
+/// usage, a normal chat session or the 150s presence heartbeat are far
+/// under this, only to blunt a compromised or malicious identity flooding
+/// writes (presence spam, OTK-upload spam, group-create spam, ...).
+pub const MAX_REQUESTS_PER_WINDOW: i64 = 300;
+
 pub fn record_nonce_or_reject(
     conn: &Connection,
     user_id: &str,
@@ -31,6 +40,14 @@ pub fn record_nonce_or_reject(
         "DELETE FROM nonces WHERE seen_at < ?1",
         params![now - NONCE_WINDOW_SECS],
     )?;
+    let recent_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM nonces WHERE user_id = ?1 AND seen_at >= ?2",
+        params![user_id, now - NONCE_WINDOW_SECS],
+        |row| row.get(0),
+    )?;
+    if recent_count >= MAX_REQUESTS_PER_WINDOW {
+        return Err(AppError::RateLimited);
+    }
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO nonces (user_id, nonce, seen_at) VALUES (?1, ?2, ?3)",
         params![user_id, nonce, now],

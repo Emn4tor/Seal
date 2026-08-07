@@ -284,6 +284,45 @@ async fn presence_put_and_get_respects_ttl_cap() {
     assert_eq!(fetched.peer_id, "12D3KooWabc");
 }
 
+/// One identity flooding signed writes gets cut off rather than accepted
+/// forever. See `db::record_nonce_or_reject`'s piggyback on the nonce
+/// table for how this is enforced with no new schema or middleware.
+#[tokio::test]
+async fn one_identity_flooding_presence_updates_gets_rate_limited() {
+    let (state, _dir) = test_state().await;
+    let router = build_public_router(state);
+    let (signing_key, user_id) = new_identity();
+    register(&router, &signing_key, &user_id, "alice").await;
+
+    let mut last_status = StatusCode::OK;
+    for _ in 0..(directory_server::db::MAX_REQUESTS_PER_WINDOW + 5) {
+        let mut req = PresenceUpdateRequest {
+            user_id: user_id.clone(),
+            peer_id: "12D3KooWabc".into(),
+            multiaddrs: vec![],
+            relay_addrs: vec![],
+            ttl_secs: 60,
+            timestamp: now(),
+            nonce: nonce(),
+            signature: String::new(),
+        };
+        req.signature = b64(&signing_key.sign(&req.signing_bytes()).to_bytes());
+        let (status, _) = call(
+            &router,
+            "PUT",
+            &format!("/v1/presence/{user_id}"),
+            Some(json!(req)),
+        )
+        .await;
+        last_status = status;
+    }
+    assert_eq!(
+        last_status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a flood of signed requests from one identity must eventually be rejected"
+    );
+}
+
 #[tokio::test]
 async fn group_lifecycle_and_roster_permissions() {
     let (state, _dir) = test_state().await;

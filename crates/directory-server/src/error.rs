@@ -11,6 +11,8 @@ pub enum AppError {
     UnknownSigner,
     #[error("replayed or stale request")]
     Replay,
+    #[error("too many requests, slow down")]
+    RateLimited,
     #[error("not found")]
     NotFound,
     #[error("conflict: {0}")]
@@ -40,6 +42,7 @@ impl IntoResponse for AppError {
             AppError::InvalidSignature | AppError::UnknownSigner | AppError::Replay => {
                 StatusCode::UNAUTHORIZED
             }
+            AppError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,

@@ -4,6 +4,17 @@
 #
 # Re-run `cargo audit` (no args) periodically and re-check whether these can
 # be dropped from the ignore list.
+#
+# RUSTSEC-2024-0429 (`glib`, unsound `Iterator`/`DoubleEndedIterator` impls
+# for `VariantStrIter`) also shows up in a plain `cargo audit` run, pulled
+# in transitively via the Linux tray-icon dependency stack
+# (tauri -> tray-icon -> ... -> glib). Reviewed: nothing in this workspace
+# iterates a `glib::Variant` directly, so the unsound code path isn't
+# reachable through anything this app does. Left out of the `ignore` list
+# below on purpose, that list is for advisories that would otherwise fail
+# the build; `cargo-audit` already treats "unsound"/"unmaintained"
+# warnings like this one as non-fatal by default, so there's nothing to
+# suppress, only to periodically re-check for a fix.
 
 [advisories]
 ignore = [

@@ -177,7 +177,7 @@ export default function App() {
 
   async function checkUpdates() {
     try {
-      let updateAvailable = await checkForUpdates();
+      const updateAvailable = await checkForUpdates();
       if (updateAvailable) {
         if (getUpdateAutoInstallEnabled()) {
           notify("Update", "Downloading and installing updates.")
@@ -187,7 +187,7 @@ export default function App() {
           setOpenModal("update-available");
         }
       }
-    } catch (e) {
+    } catch (_e) {
       notify("Update Checking Failed", "Update endpoint did not respond with a successful status code.", {variant:"error"})
     }
   }
@@ -196,6 +196,8 @@ export default function App() {
     if (getUpdateAutoCheckEnabled()) {
       checkUpdates()
     }
+    // Once at startup only, not whenever `checkUpdates` is recreated.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function finishBootWithAccount(account: AccountSummary, isNewAccount: boolean) {

@@ -939,7 +939,7 @@ export default function App() {
       {openModal === "update-available" && (
         <Modal
           title="Update Available"
-          description="A new update is available. You can update now, leter or never - It's up to you."
+          description="A new update is available. You can update now, later or never - It's up to you."
           submitLabel="Update"
           onSubmit={(_)=> update()}
           onClose={() => setOpenModal(null)}

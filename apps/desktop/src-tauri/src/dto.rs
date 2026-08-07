@@ -114,9 +114,8 @@ pub struct GroupMemberDto {
 pub struct ChannelDto {
     pub channel_id: String,
     pub name: String,
-    /// "text" or "voice". Voice channels are created/listed/selected like
-    /// any other channel in this phase; the client doesn't yet do anything
-    /// with them beyond that — real-time audio is separate, later work.
+    /// "text" or "voice". A voice channel's real-time audio is handled by
+    /// `p2p_core::voice::VoiceCallState`, joined via `join_voice_channel`.
     pub kind: String,
     pub position: i64,
 }

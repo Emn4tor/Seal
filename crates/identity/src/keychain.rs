@@ -10,11 +10,14 @@ use crate::error::IdentityError;
 const SERVICE: &str = "p2p-chat";
 const KEK_USERNAME: &str = "local-encryption-key";
 
-/// Holds the single key-encryption-key (KEK) that wraps the local SQLCipher
-/// database, stored in the OS keychain rather than on disk. Deleting it is
-/// what makes the local panic-purge instant and irrecoverable: without it,
-/// the encrypted database is permanently unreadable ciphertext, regardless
-/// of whether the file itself is ever deleted.
+/// Holds the single key-encryption-key (KEK) used to encrypt sensitive
+/// columns in the local database (identity/session pickles, message
+/// bodies, see `storage::crypto`; the database file itself is plain
+/// SQLite, not whole-file-encrypted), stored in the OS keychain rather
+/// than on disk. Deleting it is what makes the local panic-purge instant
+/// and irrecoverable: without it, every one of those columns is
+/// permanently unreadable ciphertext, regardless of whether the file
+/// itself is ever deleted.
 ///
 /// On macOS this is backed by `keychain::macos`, gated behind Touch ID
 /// (falling back to the device password); everywhere else it's the plain
@@ -211,8 +214,8 @@ fn decode_kek(b64: &str) -> Result<[u8; 32], IdentityError> {
 }
 
 /// Best-effort scrub of a KEK buffer once it's no longer needed (e.g. after
-/// deriving the SQLCipher key from it). Not a substitute for deleting the
-/// keychain entry itself.
+/// handing it to `storage::LocalStore::open`). Not a substitute for
+/// deleting the keychain entry itself.
 pub fn zeroize_kek(kek: &mut [u8; 32]) {
     kek.zeroize();
 }

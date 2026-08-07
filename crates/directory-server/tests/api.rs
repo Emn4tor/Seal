@@ -404,6 +404,63 @@ async fn group_lifecycle_and_roster_permissions() {
     assert_eq!(group.members[0].user_id, owner_id);
 }
 
+#[tokio::test]
+async fn adding_an_unregistered_user_id_to_a_roster_is_rejected() {
+    let (state, _dir) = test_state().await;
+    let router = build_public_router(state);
+
+    let (owner_key, owner_id) = new_identity();
+    register(&router, &owner_key, &owner_id, "owner").await;
+
+    let group_id = uuid::Uuid::new_v4().to_string();
+    let mut create = CreateGroupRequest {
+        group_id: group_id.clone(),
+        name: "test group".into(),
+        creator_id: owner_id.clone(),
+        timestamp: now(),
+        nonce: nonce(),
+        signature: String::new(),
+    };
+    create.signature = b64(&owner_key.sign(&create.signing_bytes()).to_bytes());
+    let (status, _) = call(&router, "POST", "/v1/groups", Some(json!(create))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // "nobody" was never registered via `/v1/users`.
+    let (_, phantom_id) = new_identity();
+    let mut add = RosterUpdateRequest {
+        group_id: group_id.clone(),
+        actor_id: owner_id.clone(),
+        add: vec![phantom_id],
+        remove: vec![],
+        expected_version: 1,
+        timestamp: now(),
+        nonce: nonce(),
+        signature: String::new(),
+    };
+    add.signature = b64(&owner_key.sign(&add.signing_bytes()).to_bytes());
+    let (status, _) = call(
+        &router,
+        "PUT",
+        &format!("/v1/groups/{group_id}"),
+        Some(json!(add)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a roster can't gain a member who was never actually registered"
+    );
+
+    let (status, body) = call(&router, "GET", &format!("/v1/groups/{group_id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let group: GroupRecord = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        group.members.len(),
+        1,
+        "the rejected add must not have partially applied"
+    );
+}
+
 /// Exercises `/v1/users/{id}/groups` — the endpoint a client uses to
 /// discover memberships it doesn't have locally (e.g. it missed the P2P
 /// key-share that normally delivers them). Membership should show up for

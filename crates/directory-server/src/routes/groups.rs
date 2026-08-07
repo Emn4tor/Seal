@@ -145,6 +145,20 @@ pub async fn update_roster(
                 )));
             }
 
+            // Every added member must be a real registered user. Without
+            // this, an owner could add an arbitrary/typo'd user_id string
+            // straight onto the roster, and anything downstream that
+            // trusts roster membership (e.g. a fellow member deciding
+            // whether to honor a `GroupKeyRequest`) would then be
+            // referencing a phantom member that was never actually vetted.
+            for user_id in &req.add {
+                if db::get_user(conn, user_id)?.is_none() {
+                    return Err(AppError::BadRequest(format!(
+                        "cannot add {user_id}: no such registered user"
+                    )));
+                }
+            }
+
             db::apply_roster_update(
                 conn,
                 &req.group_id,

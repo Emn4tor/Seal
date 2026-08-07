@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "audio"
-version = "1.2.0"
+version = "0.2.0"
 dependencies = [
  "rubato",
  "rustfft",
@@ -1174,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "crypto-session"
-version = "1.2.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "identity",
@@ -1405,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "1.2.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1450,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "directory-server"
-version = "1.2.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2788,7 +2788,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "identity"
-version = "1.2.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4050,7 +4050,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "1.2.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -4628,7 +4628,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-core"
-version = "1.2.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "audio",
@@ -6280,7 +6280,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "1.2.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8436,7 +8436,7 @@ dependencies = [
 
 [[package]]
 name = "wire-proto"
-version = "1.2.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",

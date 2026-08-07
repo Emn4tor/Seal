@@ -892,24 +892,58 @@ impl AppService {
                     ref body,
                     ref attachment,
                 } => {
-                    let conversation_id = format!("{group_id}:{channel_id}");
-                    let _ = self.store.insert_message(
-                        &conversation_id,
-                        from,
-                        body,
-                        attachment.as_ref().map(to_stored_attachment).as_ref(),
-                        now(),
-                    );
-                    return event;
-                }
-                ChatEvent::GroupKeyReceived { ref group_id, .. } => {
-                    // We've just been handed the ability to decrypt this
-                    // group: fetch its roster and subscribe so messages
-                    // actually arrive.
-                    if let Err(e) = self.accept_group_invite(&group_id.clone()).await {
-                        tracing::warn!(error = %e, group_id = %group_id, "failed to accept a group invite");
+                    // A working inbound Megolm session only proves the
+                    // sender once shared a key for this group, not that
+                    // they're still, or ever were, on its roster (a kicked
+                    // member keeps whatever session they already had; an
+                    // outsider can send an unsolicited key-share for a
+                    // group_id they merely know). Cross-check against the
+                    // locally cached roster before this ever reaches
+                    // storage or the UI.
+                    match self.store.is_group_member(group_id, from) {
+                        Ok(true) => {
+                            let conversation_id = format!("{group_id}:{channel_id}");
+                            let _ = self.store.insert_message(
+                                &conversation_id,
+                                from,
+                                body,
+                                attachment.as_ref().map(to_stored_attachment).as_ref(),
+                                now(),
+                            );
+                            return event;
+                        }
+                        Ok(false) => {
+                            tracing::warn!(group_id = %group_id, %from, "dropping a group message from a non-member");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, group_id = %group_id, "failed to check group membership, dropping the message rather than trusting it");
+                        }
                     }
-                    return event;
+                }
+                ChatEvent::GroupKeyReceived {
+                    ref group_id,
+                    ref from,
+                } => {
+                    // Same reasoning as `GroupMessage` above: an unsolicited
+                    // key-share is only trustworthy if its sender is
+                    // actually on the group's roster right now. A fresh
+                    // directory fetch (not the local cache) since this can
+                    // legitimately be the very first time we've heard of
+                    // this group, e.g. a real new invite.
+                    match self.directory.get_group(group_id).await {
+                        Ok(record) if record.members.iter().any(|m| &m.user_id == from) => {
+                            if let Err(e) = self.accept_group_invite(&group_id.clone()).await {
+                                tracing::warn!(error = %e, group_id = %group_id, "failed to accept a group invite");
+                            }
+                            return event;
+                        }
+                        Ok(_) => {
+                            tracing::warn!(group_id = %group_id, %from, "ignoring a group key share from a non-member");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, group_id = %group_id, "failed to verify roster membership for a group key share, ignoring it");
+                        }
+                    }
                 }
                 ChatEvent::GroupChannelsChanged { ref group_id } => {
                     // A fellow member created a channel: refetch so it shows

@@ -657,7 +657,10 @@ export default function App() {
     stopRingtone();
     const callId = activeCall.callId;
     setActiveCall(null);
-    api.declineCall(callId).catch(() => {});
+    // Local UI already tore the call down either way; a failure here just
+    // means the caller doesn't find out we declined and may keep ringing
+    // for a while, worth telling the user rather than losing silently.
+    api.declineCall(callId).catch((err) => notify("Couldn't notify the caller", String(err), { variant: "error" }));
   }
 
   function handleEndCall() {
@@ -669,8 +672,10 @@ export default function App() {
     if (!pending) {
       // A pending (still-dialing) call has no real `pending_call` on the
       // backend yet to end — `handleStartCall`'s own continuation cleans
-      // that up once the dial actually resolves.
-      api.endCall(callId).catch(() => {});
+      // that up once the dial actually resolves. A failure here means the
+      // other side may not find out the call ended, same reasoning as
+      // `handleDeclineCall` above.
+      api.endCall(callId).catch((err) => notify("Couldn't notify the other side", String(err), { variant: "error" }));
     }
     if (phase === "connected") playVoiceLeaveSound();
   }

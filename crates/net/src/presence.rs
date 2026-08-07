@@ -5,6 +5,14 @@ use wire_proto::PresenceUpdateRequest;
 
 use crate::error::NetError;
 
+/// Same reasoning and value as `DirectoryClient`'s own timeout: without
+/// one, a connection left over from before the OS suspended the process
+/// can sit there looking alive but never actually deliver a response, and
+/// `run_presence_heartbeat_loop` awaits each `push_presence` sequentially
+/// on a fixed interval, so one hung request here would silently stop every
+/// future re-announcement forever, not just delay this one.
+const PRESENCE_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -50,7 +58,12 @@ pub async fn push_presence(
         directory_base_url.trim_end_matches('/'),
         user_id
     );
-    let resp = reqwest::Client::new().put(&url).json(&req).send().await?;
+    let resp = reqwest::Client::new()
+        .put(&url)
+        .json(&req)
+        .timeout(PRESENCE_REQUEST_TIMEOUT)
+        .send()
+        .await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();

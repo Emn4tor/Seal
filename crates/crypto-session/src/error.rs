@@ -16,6 +16,10 @@ pub enum CryptoError {
     NoSession,
     #[error("unknown group session")]
     UnknownGroupSession,
+    #[error(
+        "message index has already been seen on this group session, refusing to decrypt a replay"
+    )]
+    ReplayedGroupMessage,
     #[error("expected a pre-key message to start an inbound session")]
     NotAPreKeyMessage,
 }

@@ -14,6 +14,12 @@ use crate::error::CryptoError;
 pub struct MegolmManager {
     outbound: HashMap<String, GroupSession>,
     inbound: HashMap<(String, String, String), InboundGroupSession>,
+    /// Highest `message_index` successfully decrypted per `(group, sender,
+    /// session)`. A Megolm inbound session can derive the key for any
+    /// index on demand and doesn't track which ones it already handed
+    /// out, so replay protection has to live here: reject anything at or
+    /// below the highest index already seen for that session.
+    highest_seen_index: HashMap<(String, String, String), u32>,
 }
 
 impl MegolmManager {
@@ -102,6 +108,14 @@ impl MegolmManager {
         let message = MegolmMessage::from_bytes(&envelope.ciphertext)
             .map_err(|e| CryptoError::Decode(e.to_string()))?;
         let decrypted = session.decrypt(&message)?;
+
+        if let Some(&highest) = self.highest_seen_index.get(&key)
+            && decrypted.message_index <= highest
+        {
+            return Err(CryptoError::ReplayedGroupMessage);
+        }
+        self.highest_seen_index.insert(key, decrypted.message_index);
+
         Ok(decrypted.plaintext)
     }
 }

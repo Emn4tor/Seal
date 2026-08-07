@@ -32,6 +32,55 @@ fn decrypt_without_the_session_key_fails() {
 }
 
 #[test]
+fn a_replayed_message_is_rejected() {
+    let mut alice_megolm = MegolmManager::new();
+    let session_key = alice_megolm.rotate_outbound("group-1");
+    let envelope = alice_megolm
+        .encrypt("group-1", "alice-id", b"hello group")
+        .expect("alice encrypts a group message");
+
+    let mut bob_megolm = MegolmManager::new();
+    bob_megolm.insert_inbound("group-1", "alice-id", &session_key);
+
+    bob_megolm
+        .decrypt(&envelope)
+        .expect("bob decrypts the message the first time");
+    let replayed = bob_megolm.decrypt(&envelope);
+    assert!(
+        replayed.is_err(),
+        "the same ciphertext decrypted twice should be rejected as a replay"
+    );
+}
+
+#[test]
+fn out_of_order_but_not_replayed_messages_still_decrypt() {
+    let mut alice_megolm = MegolmManager::new();
+    let session_key = alice_megolm.rotate_outbound("group-1");
+    let first = alice_megolm
+        .encrypt("group-1", "alice-id", b"first")
+        .unwrap();
+    let second = alice_megolm
+        .encrypt("group-1", "alice-id", b"second")
+        .unwrap();
+
+    let mut bob_megolm = MegolmManager::new();
+    bob_megolm.insert_inbound("group-1", "alice-id", &session_key);
+
+    let second_plaintext = bob_megolm
+        .decrypt(&second)
+        .expect("a later message can arrive and decrypt before an earlier one");
+    assert_eq!(second_plaintext, b"second");
+
+    let first_plaintext = bob_megolm.decrypt(&first);
+    assert!(
+        first_plaintext.is_err(),
+        "an earlier index arriving after a later one has already been seen looks like a \
+         replay and is rejected, a deliberate tradeoff for a hard replay window over \
+         tolerating reordering"
+    );
+}
+
+#[test]
 fn rotating_outbound_produces_a_new_session_key() {
     let mut mgr = MegolmManager::new();
     let key1 = mgr.rotate_outbound("group-1");

@@ -150,8 +150,11 @@ pub fn run() {
                 ],
             )?;
 
-            TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+            // `default_window_icon()` can come back `None` on a platform/build
+            // combination with no icon resource bundled. Degrading to a
+            // tray icon with no custom image is better than the whole app
+            // failing to launch over it.
+            let mut tray_builder = TrayIconBuilder::new()
                 .menu(&tray_menu)
                 // Left-click showing the same menu as right-click (rather
                 // than the old behavior of left-click reopening the window
@@ -160,14 +163,26 @@ pub fn run() {
                 // is what actually needed to change. "Open Seal" in the menu
                 // covers the direct-reopen case that used to be left-click's
                 // own hardcoded behavior.
-                .show_menu_on_left_click(true)
+                .show_menu_on_left_click(true);
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+            tray_builder
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
                     "toggle_mic" => {
                         let app = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            if let Ok(handle) = app.state::<AccountManager>().current().await {
-                                let _ = handle.toggle_mic_muted().await;
+                            match app.state::<AccountManager>().current().await {
+                                Ok(handle) => {
+                                    let _ = handle.toggle_mic_muted().await;
+                                }
+                                // No account loaded (e.g. still on the
+                                // login/picker screen), so there's no voice
+                                // call to mute, surface the window instead
+                                // of a click that visibly does nothing at
+                                // all.
+                                Err(_) => show_main_window(&app),
                             }
                         });
                     }

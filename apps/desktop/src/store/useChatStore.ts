@@ -1,5 +1,11 @@
 import { create } from "zustand";
-import type { Contact, Group, Message, NetworkStatus, Selection } from "../lib/types";
+import { conversationIdOf } from "../lib/types";
+import type { Attachment, Contact, Group, Message, NetworkStatus, Selection } from "../lib/types";
+
+export interface ConversationDraft {
+  body: string;
+  attachment: Attachment | null;
+}
 
 interface ChatState {
   userId: string | null;
@@ -14,6 +20,12 @@ interface ChatState {
    * every channel we know about (not just one we've joined), so the
    * channel list can preview who's in a call before joining it. */
   voicePresence: Record<string, string[]>;
+  /** An in-progress, unsent message per conversation, keyed the same way
+   * as `messagesByConversation`. Lives here instead of local `ChatPane`
+   * state so it survives switching away and back, and so `ChatPane` never
+   * sends whatever's typed to whichever conversation happens to be
+   * selected when Send is pressed rather than the one it was typed in. */
+  drafts: Record<string, ConversationDraft>;
 
   setUserId: (id: string | null) => void;
   setDisplayName: (name: string | null) => void;
@@ -25,6 +37,8 @@ interface ChatState {
   select: (selection: Selection) => void;
   setNetworkStatus: (status: NetworkStatus) => void;
   setChannelVoicePresence: (channelId: string, userIds: string[]) => void;
+  setDraft: (conversationId: string, draft: ConversationDraft) => void;
+  clearDraft: (conversationId: string) => void;
   /** Clears everything account-scoped — call when switching to a different account. */
   reset: () => void;
 }
@@ -39,6 +53,7 @@ const initialState = {
   unread: {},
   networkStatus: "unknown" as NetworkStatus,
   voicePresence: {},
+  drafts: {},
 };
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -58,10 +73,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setMessages: (conversationId, msgs) =>
     set((s) => ({ messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } })),
   appendMessage: (conversationId, msg) => {
-    const selected = get().selected;
-    const selectedId =
-      selected?.kind === "dm" ? selected.userId : selected?.kind === "group" ? `${selected.groupId}:${selected.channelId}` : null;
-    const isOpen = selectedId === conversationId;
+    const isOpen = conversationIdOf(get().selected) === conversationId;
     set((s) => ({
       messagesByConversation: {
         ...s.messagesByConversation,
@@ -72,12 +84,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
   select: (selection) => {
     set({ selected: selection });
-    if (selection) {
-      const id = selection.kind === "dm" ? selection.userId : `${selection.groupId}:${selection.channelId}`;
-      set((s) => ({ unread: { ...s.unread, [id]: 0 } }));
-    }
+    const id = conversationIdOf(selection);
+    if (id) set((s) => ({ unread: { ...s.unread, [id]: 0 } }));
   },
   setChannelVoicePresence: (channelId, userIds) =>
     set((s) => ({ voicePresence: { ...s.voicePresence, [channelId]: userIds } })),
+  setDraft: (conversationId, draft) =>
+    set((s) => ({ drafts: { ...s.drafts, [conversationId]: draft } })),
+  clearDraft: (conversationId) =>
+    set((s) => {
+      const drafts = { ...s.drafts };
+      delete drafts[conversationId];
+      return { drafts };
+    }),
   reset: () => set({ ...initialState }),
 }));

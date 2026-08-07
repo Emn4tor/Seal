@@ -25,6 +25,7 @@ import { getPreferredInputDevice, getPreferredOutputDevice } from "./lib/voiceSe
 import { playVoiceJoinSound, playVoiceLeaveSound } from "./lib/voiceSounds";
 import { getRingtoneId } from "./lib/ringtoneSettings";
 import { type RingtoneHandle, startCallingSound, startRingtone } from "./lib/ringtones";
+import { conversationIdOf } from "./lib/types";
 import type { AccountSummary, ChannelKind } from "./lib/types";
 import { checkForUpdates, update } from "./lib/updater";
 import { getUpdateAutoCheckEnabled, getUpdateAutoInstallEnabled } from "./lib/updaterSettings";
@@ -41,14 +42,7 @@ const TUTORIAL_SEEN_KEY = "seal-tutorial-seen";
  * worth a desktop notification (no point notifying about the conversation
  * you're already looking at). */
 function isConversationOpen(conversationId: string): boolean {
-  const selected = useChatStore.getState().selected;
-  const selectedId =
-    selected?.kind === "dm"
-      ? selected.userId
-      : selected?.kind === "group"
-        ? `${selected.groupId}:${selected.channelId}`
-        : null;
-  return selectedId === conversationId;
+  return conversationIdOf(useChatStore.getState().selected) === conversationId;
 }
 
 export default function App() {
@@ -807,6 +801,7 @@ export default function App() {
         />
       ) : chatConversationId ? (
         <ChatPane
+          conversationId={chatConversationId}
           title={chatTitle}
           subtitle={chatSubtitle}
           sealStatus={sealStatus}

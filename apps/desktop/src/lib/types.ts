@@ -78,6 +78,14 @@ export type Selection =
   | { kind: "group"; groupId: string; channelId: string }
   | null;
 
+/** The conversation id a `Selection` maps to, the same string
+ * `messagesByConversation` and per-conversation drafts are keyed by.
+ * `null` when nothing is selected. */
+export function conversationIdOf(selection: Selection): string | null {
+  if (!selection) return null;
+  return selection.kind === "dm" ? selection.userId : `${selection.groupId}:${selection.channelId}`;
+}
+
 export interface AccountSummary {
   account_id: string;
   user_id: string;

@@ -2,10 +2,17 @@ import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri";
 import type { Attachment, Contact, Message } from "../lib/types";
+import { useChatStore } from "../store/useChatStore";
 import { CipherSeal, type SealStatus } from "./CipherSeal";
 import { ImageLightbox } from "./ImageLightbox";
 
 interface ChatPaneProps {
+  /** The conversation this pane is showing, e.g. a peer's user id for a DM
+   * or `groupId:channelId` for a group channel, the same id
+   * `messagesByConversation` and `drafts` are keyed by. Used to keep each
+   * conversation's draft separate and to discard stale per-conversation UI
+   * state (like a send error) when switching to a different one. */
+  conversationId: string;
   title: string;
   subtitle: string;
   sealStatus: SealStatus;
@@ -28,6 +35,19 @@ interface ChatPaneProps {
    * only set (and the header button only shown) for a DM, never a group
    * channel, which has its own voice channels instead. */
   onCall?: () => void;
+  /** Whether the person this DM is with is currently blocked, and how to
+   * flip that, only set for a DM, same as `onCall`. */
+  blocked?: boolean;
+  onToggleBlock?: () => Promise<void>;
+}
+
+function BlockIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.6" />
+      <path d="m5.6 5.6 12.8 12.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 function PhoneIcon() {
@@ -126,6 +146,7 @@ function AttachmentBubble({ attachment }: { attachment: Attachment }) {
 }
 
 export function ChatPane({
+  conversationId,
   title,
   subtitle,
   sealStatus,
@@ -137,18 +158,40 @@ export function ChatPane({
   contacts,
   loadError,
   onCall,
+  blocked,
+  onToggleBlock,
 }: ChatPaneProps) {
-  const [draft, setDraft] = useState("");
+  const draft = useChatStore((s) => s.drafts[conversationId]?.body ?? "");
+  const pendingAttachment = useChatStore((s) => s.drafts[conversationId]?.attachment ?? null);
+  const setDraftInStore = useChatStore((s) => s.setDraft);
+  const clearDraftInStore = useChatStore((s) => s.clearDraft);
   const [sending, setSending] = useState(false);
-  const [pendingAttachment, setPendingAttachment] = useState<Attachment | null>(null);
   const [stripExif, setStripExif] = useState(true);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [blockBusy, setBlockBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  function setDraft(body: string) {
+    setDraftInStore(conversationId, { body, attachment: pendingAttachment });
+  }
+
+  function setPendingAttachment(attachment: Attachment | null) {
+    setDraftInStore(conversationId, { body: draft, attachment });
+  }
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages.length]);
+
+  // A conversation's own draft/attachment persists in the store (see
+  // `useChatStore`); only the transient, attempt-scoped error state below
+  // is local, and that should reset rather than carry over when switching
+  // to a different conversation.
+  useEffect(() => {
+    setAttachError(null);
+    setSendError(null);
+  }, [conversationId]);
 
   async function handleAttach() {
     setAttachError(null);
@@ -167,18 +210,29 @@ export function ChatPane({
     setSending(true);
     setSendError(null);
     const attachment = pendingAttachment;
-    setDraft("");
-    setPendingAttachment(null);
+    const sentToConversationId = conversationId;
+    clearDraftInStore(sentToConversationId);
     try {
       await onSend(body, attachment);
     } catch (err) {
       // Restore what was cleared optimistically above — a failed send
-      // shouldn't cost you the message you typed.
-      setDraft(body);
-      setPendingAttachment(attachment);
+      // shouldn't cost you the message you typed. Restored into the
+      // conversation it was actually written for, not whichever one
+      // happens to be open by the time this rejects.
+      setDraftInStore(sentToConversationId, { body, attachment });
       setSendError(String(err));
     } finally {
       setSending(false);
+    }
+  }
+
+  async function handleToggleBlock() {
+    if (!onToggleBlock) return;
+    setBlockBusy(true);
+    try {
+      await onToggleBlock();
+    } finally {
+      setBlockBusy(false);
     }
   }
 
@@ -200,9 +254,28 @@ export function ChatPane({
             <PhoneIcon />
           </button>
         )}
+        {onToggleBlock && (
+          <button
+            onClick={handleToggleBlock}
+            disabled={blockBusy}
+            aria-pressed={blocked ?? false}
+            aria-label={blocked ? "Unblock this person" : "Block this person"}
+            title={blocked ? "Unblock this person" : "Block this person"}
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition hover:scale-110 active:scale-90 disabled:opacity-60 ${
+              blocked ? "bg-danger-wash text-danger" : "text-text-muted hover:bg-surface-raised"
+            }`}
+          >
+            <BlockIcon />
+          </button>
+        )}
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4">
+        {blocked && (
+          <p className="mb-2 rounded-lg border border-danger-dim bg-danger-wash px-3 py-2 text-center text-xs text-danger">
+            This person is blocked. Their messages won't reach you until you unblock them.
+          </p>
+        )}
         {loadError && <p className="mb-2 text-center text-xs text-danger">{loadError}</p>}
         {messages.length === 0 && (
           <div className="flex h-full items-center justify-center">

@@ -12,6 +12,7 @@ describe("ChatPane send failure", () => {
 
     render(
       <ChatPane
+        conversationId="test-conversation"
         title="Test"
         subtitle="subtitle"
         sealStatus="secure"

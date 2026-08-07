@@ -163,10 +163,21 @@ pub struct ActorHandle {
 }
 
 impl ActorHandle {
-    pub fn spawn(app: AppHandle, data_dir: PathBuf, directory_url: String) -> Self {
+    /// Also returns the spawned task's `JoinHandle`, so a caller that's
+    /// about to replace or drop this handle (`AccountManager::set_current`/
+    /// `clear_current`) can actually wait for `run()` to exit and its
+    /// `AppService` (swarm, DB connection, in-memory KEK) to be fully torn
+    /// down, rather than assuming a dropped `Sender` clone tears it down
+    /// immediately, it only queues the teardown for whenever `run()` next
+    /// loops around to `rx.recv()`, with nothing else waiting on that.
+    pub fn spawn(
+        app: AppHandle,
+        data_dir: PathBuf,
+        directory_url: String,
+    ) -> (Self, tauri::async_runtime::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(32);
-        tauri::async_runtime::spawn(run(app, data_dir, directory_url, rx));
-        Self { tx }
+        let join = tauri::async_runtime::spawn(run(app, data_dir, directory_url, rx));
+        (Self { tx }, join)
     }
 
     async fn call<T>(

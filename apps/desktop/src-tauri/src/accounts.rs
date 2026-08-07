@@ -53,6 +53,37 @@ pub fn load(shared_data_dir: &Path) -> AccountsFile {
         .unwrap_or_default()
 }
 
+/// Guards every `load` -> mutate -> `save` sequence against another Tauri
+/// command doing the same thing at the same time. Without this, two
+/// commands racing (e.g. a doubly-fired "create account" click before the
+/// button disables) could each load the same pre-mutation snapshot, and
+/// whichever saves last silently overwrites the other's change, even
+/// though both changes exist on disk (a fresh keychain entry, an identity
+/// directory), just not both recorded in `accounts.json`. One process-wide
+/// lock is enough since it's this one JSON file for this one app process,
+/// not a resource shared across processes.
+#[derive(Default)]
+pub struct AccountsFileLock(std::sync::Mutex<()>);
+
+/// Runs `f` against the current `AccountsFile`, then persists whatever `f`
+/// left it as. The only way any command in this module should read or
+/// write `accounts.json`, so every such sequence is implicitly serialized
+/// through `lock`.
+pub fn update<T>(
+    shared_data_dir: &Path,
+    lock: &AccountsFileLock,
+    f: impl FnOnce(&mut AccountsFile) -> T,
+) -> std::io::Result<T> {
+    let _guard = lock
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load(shared_data_dir);
+    let result = f(&mut file);
+    save(shared_data_dir, &file)?;
+    Ok(result)
+}
+
 pub fn save(shared_data_dir: &Path, file: &AccountsFile) -> std::io::Result<()> {
     std::fs::create_dir_all(shared_data_dir)?;
     let data = serde_json::to_string_pretty(file)?;

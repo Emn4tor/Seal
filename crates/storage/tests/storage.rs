@@ -126,6 +126,66 @@ fn panic_purge_deletes_db_files_and_crypto_shreds_the_kek() {
     );
 }
 
+// Unix-only: simulates a file deletion failure (e.g. still open elsewhere)
+// via directory permissions, which Windows doesn't model the same way.
+// Also skipped as root (a container/CI edge case, not this project's
+// actual GitHub Actions runners), since root bypasses permission checks
+// entirely and the deletion would just silently succeed.
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "needs a real D-Bus Secret Service, not reliably available on headless CI, see the comment above panic_purge_deletes_db_files_and_crypto_shreds_the_kek"
+)]
+#[cfg(unix)]
+#[test]
+fn panic_purge_surfaces_a_file_deletion_error_instead_of_swallowing_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if unsafe { libc_geteuid() } == 0 {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("local.sqlite3");
+    let service = format!("p2p-chat-test-{}", unique_suffix());
+    let keychain = Keychain::new(&service, "kek").unwrap();
+    let guard = TestKeychainGuard(keychain);
+
+    let kek = guard.0.load_or_create_kek().unwrap();
+    {
+        let store = LocalStore::open(&db_path, kek).unwrap();
+        store
+            .save_identity("user-1", "alice", "some-pickle-json", now())
+            .unwrap();
+    }
+
+    let original_perms = std::fs::metadata(dir.path()).unwrap().permissions();
+    let mut readonly = original_perms.clone();
+    readonly.set_mode(0o555);
+    std::fs::set_permissions(dir.path(), readonly).unwrap();
+
+    let result = storage::panic_purge(&db_path, &guard.0);
+
+    // Restore permissions regardless of outcome so the tempdir's own
+    // cleanup on drop can actually remove it.
+    std::fs::set_permissions(dir.path(), original_perms).unwrap();
+
+    assert!(
+        result.is_err(),
+        "a real deletion failure (file still locked, permission denied, ...) must be \
+         surfaced as an error, not reported as a successful purge"
+    );
+}
+
+// A tiny inline `geteuid` instead of pulling in the `libc` crate as a new
+// dependency just for one test's root check.
+#[cfg(unix)]
+unsafe fn libc_geteuid() -> u32 {
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
+    unsafe { geteuid() }
+}
+
 fn unique_suffix() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -114,6 +114,7 @@ pub fn run() {
 
             app.manage(AppPaths { shared_data_dir });
             app.manage(AccountManager::new());
+            app.manage(accounts::AccountsFileLock::default());
 
             // No backend and no account is started here anymore — the
             // frontend calls `get_saved_server_url`/`get_official_server_url`

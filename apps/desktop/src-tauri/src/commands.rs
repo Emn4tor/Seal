@@ -87,15 +87,16 @@ pub async fn create_account(
     app: AppHandle,
     paths: State<'_, AppPaths>,
     manager: State<'_, AccountManager>,
+    accounts_lock: State<'_, accounts::AccountsFileLock>,
     server_url: String,
     display_name: String,
 ) -> Result<AccountSummaryDto, String> {
     let account_id = accounts::new_account_id();
     let dir = accounts::account_dir(&paths.shared_data_dir, &account_id);
 
-    let handle = ActorHandle::spawn(app, dir, server_url);
+    let (handle, join) = ActorHandle::spawn(app, dir, server_url);
     let (user_id, display_name) = handle.initialize(Some(display_name)).await?;
-    manager.set_current(handle).await;
+    manager.set_current(handle, join).await;
 
     let entry = accounts::AccountEntry {
         account_id: account_id.clone(),
@@ -103,10 +104,11 @@ pub async fn create_account(
         display_name,
         created_at: accounts::now(),
     };
-    let mut file = accounts::load(&paths.shared_data_dir);
-    file.accounts.push(entry.clone());
-    file.active_account_id = Some(account_id);
-    accounts::save(&paths.shared_data_dir, &file).map_err(|e| e.to_string())?;
+    accounts::update(&paths.shared_data_dir, &accounts_lock, |file| {
+        file.accounts.push(entry.clone());
+        file.active_account_id = Some(account_id.clone());
+    })
+    .map_err(|e| e.to_string())?;
 
     Ok(entry.into())
 }
@@ -119,11 +121,11 @@ pub async fn resume_account(
     app: AppHandle,
     paths: State<'_, AppPaths>,
     manager: State<'_, AccountManager>,
+    accounts_lock: State<'_, accounts::AccountsFileLock>,
     server_url: String,
     account_id: String,
 ) -> Result<AccountSummaryDto, String> {
-    let mut file = accounts::load(&paths.shared_data_dir);
-    let created_at = file
+    let created_at = accounts::load(&paths.shared_data_dir)
         .accounts
         .iter()
         .find(|a| a.account_id == account_id)
@@ -131,9 +133,9 @@ pub async fn resume_account(
         .ok_or_else(|| "no such account on this device".to_string())?;
 
     let dir = accounts::account_dir(&paths.shared_data_dir, &account_id);
-    let handle = ActorHandle::spawn(app, dir, server_url);
+    let (handle, join) = ActorHandle::spawn(app, dir, server_url);
     let (user_id, display_name) = handle.initialize(None).await?;
-    manager.set_current(handle).await;
+    manager.set_current(handle, join).await;
 
     // Rebuild the cached entry from what was actually loaded rather than
     // trusting the old cached copy — keeps `accounts.json` honest even if
@@ -144,10 +146,12 @@ pub async fn resume_account(
         display_name,
         created_at,
     };
-    file.accounts.retain(|a| a.account_id != account_id);
-    file.accounts.push(entry.clone());
-    file.active_account_id = Some(account_id);
-    accounts::save(&paths.shared_data_dir, &file).map_err(|e| e.to_string())?;
+    accounts::update(&paths.shared_data_dir, &accounts_lock, |file| {
+        file.accounts.retain(|a| a.account_id != account_id);
+        file.accounts.push(entry.clone());
+        file.active_account_id = Some(account_id.clone());
+    })
+    .map_err(|e| e.to_string())?;
 
     Ok(entry.into())
 }
@@ -160,6 +164,7 @@ pub async fn resume_account(
 pub async fn rename_account(
     paths: State<'_, AppPaths>,
     manager: State<'_, AccountManager>,
+    accounts_lock: State<'_, accounts::AccountsFileLock>,
     new_display_name: String,
 ) -> Result<(), String> {
     manager
@@ -168,13 +173,14 @@ pub async fn rename_account(
         .rename(new_display_name.clone())
         .await?;
 
-    let mut file = accounts::load(&paths.shared_data_dir);
-    if let Some(active_id) = file.active_account_id.clone() {
-        if let Some(entry) = file.accounts.iter_mut().find(|a| a.account_id == active_id) {
-            entry.display_name = new_display_name;
+    accounts::update(&paths.shared_data_dir, &accounts_lock, |file| {
+        if let Some(active_id) = file.active_account_id.clone() {
+            if let Some(entry) = file.accounts.iter_mut().find(|a| a.account_id == active_id) {
+                entry.display_name = new_display_name;
+            }
         }
-    }
-    accounts::save(&paths.shared_data_dir, &file).map_err(|e| e.to_string())?;
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -186,10 +192,13 @@ pub async fn rename_account(
 pub async fn remove_account(
     paths: State<'_, AppPaths>,
     manager: State<'_, AccountManager>,
+    accounts_lock: State<'_, accounts::AccountsFileLock>,
     account_id: String,
 ) -> Result<(), String> {
-    let mut file = accounts::load(&paths.shared_data_dir);
-    let is_active = file.active_account_id.as_deref() == Some(account_id.as_str());
+    let is_active = accounts::load(&paths.shared_data_dir)
+        .active_account_id
+        .as_deref()
+        == Some(account_id.as_str());
     if is_active {
         manager.clear_current().await;
     }
@@ -205,11 +214,13 @@ pub async fn remove_account(
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
 
-    file.accounts.retain(|a| a.account_id != account_id);
-    if is_active {
-        file.active_account_id = None;
-    }
-    accounts::save(&paths.shared_data_dir, &file).map_err(|e| e.to_string())?;
+    accounts::update(&paths.shared_data_dir, &accounts_lock, |file| {
+        file.accounts.retain(|a| a.account_id != account_id);
+        if file.active_account_id.as_deref() == Some(account_id.as_str()) {
+            file.active_account_id = None;
+        }
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -220,6 +231,7 @@ pub async fn remove_account(
 pub async fn panic_purge(
     paths: State<'_, AppPaths>,
     manager: State<'_, AccountManager>,
+    accounts_lock: State<'_, accounts::AccountsFileLock>,
 ) -> Result<(), String> {
     manager.clear_current().await;
 
@@ -233,8 +245,10 @@ pub async fn panic_purge(
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
     }
-    accounts::save(&paths.shared_data_dir, &accounts::AccountsFile::default())
-        .map_err(|e| e.to_string())?;
+    accounts::update(&paths.shared_data_dir, &accounts_lock, |file| {
+        *file = accounts::AccountsFile::default();
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

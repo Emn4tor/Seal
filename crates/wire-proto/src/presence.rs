@@ -9,6 +9,7 @@ pub struct PresenceUpdateRequest {
     pub multiaddrs: Vec<String>,
     pub relay_addrs: Vec<String>,
     pub ttl_secs: u64,
+    pub share_online_status: bool,
     pub timestamp: i64,
     pub nonce: String,
     pub signature: String,
@@ -21,6 +22,7 @@ impl PresenceUpdateRequest {
         let multi = self.multiaddrs.join(",");
         let relay = self.relay_addrs.join(",");
         let ttl = self.ttl_secs.to_string();
+        let share = if self.share_online_status { "1" } else { "0" };
         let ts = self.timestamp.to_string();
         join(
             Self::DOMAIN,
@@ -30,6 +32,7 @@ impl PresenceUpdateRequest {
                 &multi,
                 &relay,
                 &ttl,
+                share,
                 &ts,
                 &self.nonce,
             ],
@@ -44,6 +47,7 @@ pub struct PresenceRecord {
     pub multiaddrs: Vec<String>,
     pub relay_addrs: Vec<String>,
     pub expires_at: i64,
+    pub share_online_status: bool,
 }
 
 /// The directory server's own libp2p relay identity, if it's running one —

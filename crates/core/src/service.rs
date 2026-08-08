@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -161,6 +163,15 @@ pub struct AppService {
     /// active call. What this enables: showing who's in a voice channel
     /// *before* joining it, instead of only finding out after.
     voice_channel_presence: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    /// Whether the directory-server presence heartbeat currently marks this
+    /// account as visible to contacts as "online". Read fresh on every
+    /// heartbeat tick by the closure passed to
+    /// `net::presence::run_presence_heartbeat_loop`, so flipping this takes
+    /// effect on the next heartbeat, no restart needed. Doesn't affect
+    /// whether the heartbeat itself keeps running: that's still required
+    /// regardless, since it's also how contacts learn how to reach this
+    /// peer at all.
+    share_online_status: Arc<AtomicBool>,
     _presence_heartbeat: HeartbeatGuard,
 }
 
@@ -335,12 +346,20 @@ impl AppService {
             }
         };
 
+        // Enabled by default; the frontend re-asserts the user's actual
+        // saved preference right after startup via `set_share_online_status`
+        // (see `apps/desktop`'s `onlineStatusSettings.ts`), same pattern as
+        // the mic threshold and other locally-persisted settings that need
+        // to reach backend state.
+        let share_online_status = Arc::new(AtomicBool::new(true));
+
         directory
             .put_presence(
                 &node.identity,
                 &peer_id_str,
                 addrs.clone(),
                 relay_addrs.clone(),
+                share_online_status.load(Ordering::Relaxed),
                 300,
             )
             .await?;
@@ -356,12 +375,14 @@ impl AppService {
         let heartbeat_identity = std::sync::Arc::new(Identity::from_pickle_json(&pickle_json)?);
         let heartbeat_addrs = addrs;
         let heartbeat_relay_addrs = relay_addrs;
+        let heartbeat_share_online_status = share_online_status.clone();
         let heartbeat_handle = tokio::spawn(net::presence::run_presence_heartbeat_loop(
             directory_url,
             heartbeat_identity,
             peer_id_str,
             move || heartbeat_addrs.clone(),
             move || heartbeat_relay_addrs.clone(),
+            move || heartbeat_share_online_status.load(Ordering::Relaxed),
             std::time::Duration::from_secs(150),
         ));
 
@@ -382,6 +403,7 @@ impl AppService {
             voice_call_last_heartbeat: None,
             pending_call: None,
             voice_channel_presence: std::collections::HashMap::new(),
+            share_online_status,
             _presence_heartbeat: HeartbeatGuard(heartbeat_handle),
         };
         svc.discover_missing_groups().await;
@@ -416,6 +438,36 @@ impl AppService {
 
     pub fn list_contacts(&self) -> anyhow::Result<Vec<storage::StoredContact>> {
         Ok(self.store.list_contacts()?)
+    }
+
+    /// Whether contacts can currently see this account as "online". Takes
+    /// effect on the next presence heartbeat (at most 150s), not
+    /// immediately: the setting only changes what the *next* heartbeat
+    /// asserts, it doesn't retroactively edit the directory server's
+    /// already-stored record.
+    pub fn set_share_online_status(&self, enabled: bool) {
+        self.share_online_status.store(enabled, Ordering::Relaxed);
+    }
+
+    
+    pub fn contacts_presence_lookup_plan(
+        &self,
+    ) -> anyhow::Result<(
+        std::collections::HashMap<String, bool>,
+        Vec<String>,
+        DirectoryClient,
+    )> {
+        let contacts = self.store.list_contacts()?;
+        let mut known_online = std::collections::HashMap::with_capacity(contacts.len());
+        let mut still_unknown = Vec::new();
+        for c in contacts {
+            if self.node.is_connected_to(&c.user_id) {
+                known_online.insert(c.user_id, true);
+            } else {
+                still_unknown.push(c.user_id);
+            }
+        }
+        Ok((known_online, still_unknown, self.directory.clone()))
     }
 
     pub fn list_groups(&self) -> anyhow::Result<Vec<storage::StoredGroup>> {
@@ -1637,4 +1689,25 @@ impl AppService {
             }
         }
     }
+}
+
+/// Resolves the contacts a [`AppService::contacts_presence_lookup_plan`]
+/// couldn't already answer from a live connection.
+pub async fn resolve_contacts_online_status(
+    mut known_online: std::collections::HashMap<String, bool>,
+    still_unknown: Vec<String>,
+    directory: DirectoryClient,
+) -> std::collections::HashMap<String, bool> {
+    let lookups = still_unknown.into_iter().map(|user_id| {
+        let directory = directory.clone();
+        async move {
+            let is_online = directory
+                .get_presence(&user_id)
+                .await
+                .is_ok_and(|record| record.share_online_status);
+            (user_id, is_online)
+        }
+    });
+    known_online.extend(futures::future::join_all(lookups).await);
+    known_online
 }

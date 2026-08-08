@@ -38,6 +38,14 @@ rtrb = "0.3"
 # already in this workspace, which does compile vendored C).
 cpal = "0.18"
 
+# Windows defaults to a coarse ~15.6ms system timer resolution; this
+# pipeline's 5ms capture poll and 20ms mixer tick need finer granularity
+# than that to stay on schedule, or ticks land late/coalesced and sound
+# like dropouts. Raised for the duration of a call via `timeBeginPeriod`
+# in `voice.rs`, not globally at startup.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Media"] }
+
 [dev-dependencies]
 tempfile = "3"
 base64 = "0.22"

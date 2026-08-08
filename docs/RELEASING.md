@@ -60,6 +60,10 @@ The release notes for every build already carry the workaround (see `releaseBody
 
 This doesn't affect the Linux or Windows builds, only macOS.
 
+## 5. Microphone access in the built macOS app
+
+`tauri-bundler` signs the release `.app` with Hardened Runtime enabled even under ad-hoc signing. Hardened Runtime blocks access to protected resources (microphone included) unless the app carries the matching entitlement, regardless of `Info.plist`'s `NSMicrophoneUsageDescription`. `apps/desktop/src-tauri/entitlements.plist` grants `com.apple.security.device.audio-input` and is wired in via `bundle.macOS.entitlements` in `tauri.conf.json`; without it, voice calls silently get no local microphone (`spawn_audio_io_thread` in `crates/core/src/voice.rs` deliberately never fails the call outright on a device error, it just logs a warning and carries on with no local audio, so this fails silently rather than with a visible error). Only affects release builds signed this way; `npm run tauri dev` never goes through this signing path.
+
 ### If this project gets a paid Apple Developer account later
 
 Proper code signing + notarization removes the warning entirely. `tauri-action` supports it natively; it just needs these as GitHub Actions secrets, and `release.yml`'s `env:` block updated to pass them through:

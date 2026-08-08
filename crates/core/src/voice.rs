@@ -118,6 +118,37 @@ pub enum CallScope {
     },
 }
 
+/// Windows defaults to a coarse ~15.6ms system timer resolution; this
+/// call's capture poll (5ms) and mixer tick (20ms) need finer granularity
+/// than that or they land late/coalesced, audible as dropouts even with no
+/// network jitter at all. Raising it only for the lifetime of a call (via
+/// `Drop`'s matching [`lower_call_timer_resolution`]) rather than globally
+/// at process startup keeps the extra CPU/power cost scoped to when it's
+/// actually needed. No-op on other platforms, which don't coalesce timers
+/// this coarsely by default.
+#[cfg(windows)]
+fn raise_call_timer_resolution() {
+    unsafe {
+        windows_sys::Win32::Media::timeBeginPeriod(1);
+    }
+}
+
+#[cfg(not(windows))]
+fn raise_call_timer_resolution() {}
+
+/// Reverses [`raise_call_timer_resolution`]; must be called exactly once
+/// per matching raise; called from `VoiceCallState`'s `Drop`.
+#[cfg(windows)]
+fn lower_call_timer_resolution() {
+    // SAFETY: see `raise_call_timer_resolution`.
+    unsafe {
+        windows_sys::Win32::Media::timeEndPeriod(1);
+    }
+}
+
+#[cfg(not(windows))]
+fn lower_call_timer_resolution() {}
+
 /// One active voice call: owns local audio I/O and every open peer stream.
 /// Dropping this tears the whole thing down: that's the "leave" mechanism.
 pub struct VoiceCallState {
@@ -383,6 +414,7 @@ impl VoiceCallState {
         preferred_input: Option<String>,
         preferred_output: Option<String>,
     ) -> anyhow::Result<Self> {
+        raise_call_timer_resolution();
         let running = Arc::new(AtomicBool::new(true));
 
         let (mic_tx, mic_rx) = rtrb::RingBuffer::<f32>::new(RING_BUFFER_CAPACITY);
@@ -719,6 +751,7 @@ impl Drop for VoiceCallState {
         for task in &self.tasks {
             task.abort();
         }
+        lower_call_timer_resolution();
     }
 }
 
@@ -1521,35 +1554,6 @@ mod tests {
         );
     }
 
-    /// `intermittent_speech_near_the_real_gate_threshold_has_no_audible_clicks`
-    /// above proved the gate/declick machinery is fine, but it fed frames
-    /// through a real loopback libp2p connection, and loopback TCP on the
-    /// same machine has effectively zero arrival jitter, so it could never
-    /// surface a bug that only shows up over a real relay hop. It also only
-    /// reads the ring buffer after the run finishes, which hides the actual
-    /// bug: `spawn_audio_io_thread`'s real playback callback drains the
-    /// ring buffer at a fixed real-time rate set by the audio hardware, not
-    /// by whenever the mixer happens to have produced something, falling
-    /// back to `0.0` on underrun. A gap only exists as a function of real
-    /// elapsed time versus what the mixer produced during that time, not as
-    /// a property of the finished buffer's contents, so this spawns a
-    /// second task that mirrors that real callback: draining on a fixed
-    /// real-time tick, independent of the mixer, applying the same
-    /// `declick_step` on every sample including underrun ones. Frames are
-    /// pushed straight into the jitter queue `run_mixer_loop` reads from
-    /// (bypassing capture/encode/network entirely), matching the real
-    /// sender's steady cadence except for one deliberate delivery gap: see
-    /// `GAP_AFTER_FRAME`/`GAP_EXTRA_MS` below.
-    /// `start_paused`: the producer, mixer, and consumer are three
-    /// separate timing-sensitive tasks racing real `tokio::time` timers
-    /// against each other; on real wall-clock time this test is at the
-    /// mercy of whatever the actual machine/CI runner is doing at that
-    /// moment (a loaded CI box, or Windows' much coarser ~15.6ms default
-    /// timer resolution, can each turn injected-jitter margin into
-    /// scheduling noise unrelated to the mixer logic being tested). A
-    /// paused clock makes every `sleep`/`interval` advance virtual time
-    /// deterministically instead, so the test's outcome depends only on
-    /// the mixer's actual logic, not on real-machine timing.
     #[tokio::test(start_paused = true)]
     async fn mixer_tolerates_realistic_arrival_jitter_without_frequent_underruns() {
         const OUTPUT_RATE: u32 = 48_000;
@@ -1592,27 +1596,6 @@ mod tests {
             post_declick
         });
 
-        // The real sender (`run_send_pacer_loop`) paces sends at a steady
-        // 20ms; this delivers frames on that same steady cadence except for
-        // a run of `BURST_LEN` consecutive deliveries at `BURST_DELAY_MS`
-        // each, representing a real relay-hop congestion event (which
-        // affects a run of consecutive packets, not just one) rather than
-        // per-packet jitter. A numeric simulation of this exact scenario
-        // (see the session notes) confirmed ordinary bounded per-frame
-        // jitter, even fairly wide, never actually starves a plain FIFO
-        // queue that only drains what has already arrived: early frames
-        // bank slack that later ones draw down, so nothing here is testing
-        // that. Only a sustained run of late frames exceeds what that
-        // natural banking can absorb, which is what actually distinguishes
-        // "has a buffer" from "doesn't." Under `start_paused` there is no
-        // such thing as a near-tie: two timers due at the same virtual
-        // instant resolve in a fixed, deterministic order every run, so a
-        // test relying on "who wins the race" (as an earlier, real-wall-
-        // clock version of this test did) can't exercise a real ordering
-        // violation here, only an artifact of tokio's internal tie-
-        // breaking. An unambiguous burst, by contrast, behaves identically
-        // under virtual or real time: whether a given tick has a frame
-        // ready is a genuine ordering fact, not a coin flip.
         const LEAD_FRAMES: usize = 20;
         const BURST_LEN: usize = 4;
         const BURST_DELAY_MS: u64 = 50;

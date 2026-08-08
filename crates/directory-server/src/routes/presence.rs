@@ -38,6 +38,7 @@ pub async fn put_presence(
                 &req.peer_id,
                 &req.multiaddrs,
                 &req.relay_addrs,
+                req.share_online_status,
                 expires_at,
                 now,
             )?;
@@ -47,6 +48,7 @@ pub async fn put_presence(
                 multiaddrs: req.multiaddrs,
                 relay_addrs: req.relay_addrs,
                 expires_at,
+                share_online_status: req.share_online_status,
             })
         })
         .await

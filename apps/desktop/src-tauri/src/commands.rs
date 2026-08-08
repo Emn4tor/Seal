@@ -553,6 +553,25 @@ pub async fn get_voice_speaking_participants(
         .await
 }
 
+#[tauri::command]
+pub async fn set_share_online_status(
+    state: State<'_, AccountManager>,
+    enabled: bool,
+) -> Result<(), String> {
+    state
+        .current()
+        .await?
+        .set_share_online_status(enabled)
+        .await
+}
+
+#[tauri::command]
+pub async fn get_contacts_online_status(
+    state: State<'_, AccountManager>,
+) -> Result<std::collections::HashMap<String, bool>, String> {
+    state.current().await?.contacts_online_status().await
+}
+
 /// Removes EXIF metadata from image bytes losslessly (segment-level, no
 /// recompression) if the container format is one `img-parts` recognizes.
 /// Returns the bytes unchanged with `false` if not — reported honestly by

@@ -167,6 +167,13 @@ pub enum Command {
     GetVoiceSpeakingParticipants {
         respond_to: oneshot::Sender<Result<Vec<String>, String>>,
     },
+    SetShareOnlineStatus {
+        enabled: bool,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
+    GetContactsOnlineStatus {
+        respond_to: oneshot::Sender<Result<std::collections::HashMap<String, bool>, String>>,
+    },
 }
 
 #[derive(Clone)]
@@ -498,6 +505,21 @@ impl ActorHandle {
         .await?
     }
 
+    pub async fn set_share_online_status(&self, enabled: bool) -> Result<(), String> {
+        self.call(|respond_to| Command::SetShareOnlineStatus {
+            enabled,
+            respond_to,
+        })
+        .await?
+    }
+
+    pub async fn contacts_online_status(
+        &self,
+    ) -> Result<std::collections::HashMap<String, bool>, String> {
+        self.call(|respond_to| Command::GetContactsOnlineStatus { respond_to })
+            .await?
+    }
+
     pub async fn get_voice_speaking_participants(&self) -> Result<Vec<String>, String> {
         self.call(|respond_to| Command::GetVoiceSpeakingParticipants { respond_to })
             .await?
@@ -697,6 +719,12 @@ fn reject_not_initialized(cmd: Command) {
             let _ = respond_to.send(Err(err()));
         }
         Command::GetVoiceSpeakingParticipants { respond_to } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::SetShareOnlineStatus { respond_to, .. } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::GetContactsOnlineStatus { respond_to } => {
             let _ = respond_to.send(Err(err()));
         }
     }
@@ -987,6 +1015,27 @@ async fn handle_command(app: &AppHandle, service: &mut AppService, cmd: Command)
         }
         Command::GetVoiceSpeakingParticipants { respond_to } => {
             let _ = respond_to.send(Ok(service.voice_speaking_participants()));
+        }
+        Command::SetShareOnlineStatus {
+            enabled,
+            respond_to,
+        } => {
+            service.set_share_online_status(enabled);
+            let _ = respond_to.send(Ok(()));
+        }
+        Command::GetContactsOnlineStatus { respond_to } => {
+            let result = match service.contacts_presence_lookup_plan() {
+                Ok((known_online, still_unknown, directory)) => {
+                    Ok(p2p_core::resolve_contacts_online_status(
+                        known_online,
+                        still_unknown,
+                        directory,
+                    )
+                    .await)
+                }
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = respond_to.send(result);
         }
     }
 }

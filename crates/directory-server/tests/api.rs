@@ -257,6 +257,7 @@ async fn presence_put_and_get_respects_ttl_cap() {
         multiaddrs: vec!["/ip4/127.0.0.1/udp/4001/quic-v1".into()],
         relay_addrs: vec![],
         ttl_secs: 999_999, // far above the server's cap
+        share_online_status: true,
         timestamp: now(),
         nonce: nonce(),
         signature: String::new(),
@@ -302,6 +303,7 @@ async fn one_identity_flooding_presence_updates_gets_rate_limited() {
             multiaddrs: vec![],
             relay_addrs: vec![],
             ttl_secs: 60,
+            share_online_status: true,
             timestamp: now(),
             nonce: nonce(),
             signature: String::new(),

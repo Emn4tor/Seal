@@ -4654,6 +4654,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.59.0",
  "wire-proto",
 ]
 

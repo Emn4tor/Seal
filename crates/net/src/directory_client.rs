@@ -118,6 +118,7 @@ impl DirectoryClient {
         peer_id: &str,
         multiaddrs: Vec<String>,
         relay_addrs: Vec<String>,
+        share_online_status: bool,
         ttl_secs: u64,
     ) -> Result<PresenceRecord, NetError> {
         let mut req = PresenceUpdateRequest {
@@ -126,6 +127,7 @@ impl DirectoryClient {
             multiaddrs,
             relay_addrs,
             ttl_secs,
+            share_online_status,
             timestamp: now(),
             nonce: nonce(),
             signature: String::new(),

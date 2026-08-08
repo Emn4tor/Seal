@@ -8,6 +8,8 @@ pub use contact::Contact;
 pub use crypto_session::AttachmentPayload;
 pub use events::ChatEvent;
 pub use node::ChatNode;
-pub use service::{AppService, ChannelInfo, GroupInfo, MAX_ATTACHMENT_SIZE};
+pub use service::{
+    AppService, ChannelInfo, GroupInfo, MAX_ATTACHMENT_SIZE, resolve_contacts_online_status,
+};
 pub use voice::{CallScope, VoiceCallState, list_input_devices, list_output_devices};
 pub use wire_proto::ChannelKind;

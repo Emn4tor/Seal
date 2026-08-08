@@ -4,7 +4,7 @@
 //! build — the same native-build fragility this project already avoided
 //! once (SQLCipher -> plain bundled SQLite). ADPCM is simple enough to
 //! implement correctly in a hundred-odd lines with zero dependencies, at
-//! the cost of noticeably less crisp voice quality than Opus.
+//! the cost of noticeably less crisp voice quality than Opus lol.
 //!
 //! Each `Encoder`/`Decoder` holds running state that evolves across every
 //! frame passed through it — make a fresh pair per logical stream (e.g. a

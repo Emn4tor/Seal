@@ -236,6 +236,8 @@ pub fn run() {
             commands::set_mic_threshold_db,
             commands::set_hear_self,
             commands::get_voice_speaking_participants,
+            commands::set_share_online_status,
+            commands::get_contacts_online_status,
             commands::panic_purge,
             commands::pick_attachment,
             commands::get_image_exif,

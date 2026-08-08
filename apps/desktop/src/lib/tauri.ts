@@ -85,6 +85,10 @@ export const api = {
   setMicThresholdDb: (db: number) => invoke<void>("set_mic_threshold_db", { db }),
   setHearSelf: (enabled: boolean) => invoke<void>("set_hear_self", { enabled }),
   getVoiceSpeakingParticipants: () => invoke<string[]>("get_voice_speaking_participants"),
+  setShareOnlineStatus: (enabled: boolean) =>
+    invoke<void>("set_share_online_status", { enabled }),
+  getContactsOnlineStatus: () =>
+    invoke<Record<string, boolean>>("get_contacts_online_status"),
   panicPurge: () => invoke<void>("panic_purge"),
   pickAttachment: (stripExif: boolean) =>
     invoke<Attachment | null>("pick_attachment", { stripExif }),

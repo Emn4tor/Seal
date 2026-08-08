@@ -32,12 +32,14 @@ fn nonce() -> String {
 /// is the only thing the directory server ever learns about a peer's
 /// network location — a short-TTL rendezvous record, re-asserted on a
 /// heartbeat, never message content.
+#[allow(clippy::too_many_arguments)]
 pub async fn push_presence(
     directory_base_url: &str,
     identity: &Identity,
     peer_id: &str,
     multiaddrs: Vec<String>,
     relay_addrs: Vec<String>,
+    share_online_status: bool,
     ttl_secs: u64,
 ) -> Result<(), NetError> {
     let user_id = identity.user_id();
@@ -47,6 +49,7 @@ pub async fn push_presence(
         multiaddrs,
         relay_addrs,
         ttl_secs,
+        share_online_status,
         timestamp: now(),
         nonce: nonce(),
         signature: String::new(),
@@ -87,6 +90,7 @@ pub async fn run_presence_heartbeat_loop(
     peer_id: String,
     get_multiaddrs: impl Fn() -> Vec<String> + Send + 'static,
     get_relay_addrs: impl Fn() -> Vec<String> + Send + 'static,
+    get_share_online_status: impl Fn() -> bool + Send + 'static,
     interval: Duration,
 ) {
     let mut ticker = tokio::time::interval(interval);
@@ -94,6 +98,7 @@ pub async fn run_presence_heartbeat_loop(
         ticker.tick().await;
         let multiaddrs = get_multiaddrs();
         let relay_addrs = get_relay_addrs();
+        let share_online_status = get_share_online_status();
         let ttl_secs = (interval.as_secs() * 2).max(30);
         if let Err(e) = push_presence(
             &directory_base_url,
@@ -101,6 +106,7 @@ pub async fn run_presence_heartbeat_loop(
             &peer_id,
             multiaddrs,
             relay_addrs,
+            share_online_status,
             ttl_secs,
         )
         .await

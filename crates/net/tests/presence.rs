@@ -64,6 +64,7 @@ async fn presence_heartbeat_reaches_a_real_directory_server() {
         "12D3KooWTestPeerId",
         vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         vec![],
+        true,
         60,
     )
     .await

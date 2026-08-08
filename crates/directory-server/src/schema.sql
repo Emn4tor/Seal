@@ -16,13 +16,15 @@ CREATE TABLE IF NOT EXISTS one_time_keys (
     PRIMARY KEY (user_id, key_id)
 );
 
+
 CREATE TABLE IF NOT EXISTS presence (
     user_id TEXT PRIMARY KEY,
     peer_id TEXT NOT NULL,
     multiaddrs TEXT NOT NULL,
     relay_addrs TEXT NOT NULL,
     expires_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    share_online_status INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS groups (

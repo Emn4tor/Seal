@@ -12,6 +12,9 @@ interface ConversationListProps {
   /** Who's in each voice channel right now, keyed by channel_id — lets a
    * voice channel row show a preview before the user joins it. */
   voicePresence: Record<string, string[]>;
+  /** Keyed by user_id; a missing entry (not just `false`) means unknown,
+   * treated the same as offline. */
+  onlineStatus: Record<string, boolean>;
   currentUserId: string;
   onSelectContact: (userId: string) => void;
   onSelectGroupChannel: (channelId: string) => void;
@@ -30,10 +33,18 @@ function participantLabel(contacts: Contact[], currentUserId: string, userIds: s
     .join(", ");
 }
 
-function Avatar({ name }: { name: string }) {
+function Avatar({ name, online }: { name: string; online?: boolean }) {
   return (
-    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-raised font-display text-xs font-medium text-text-muted">
-      {name.trim().slice(0, 1).toUpperCase() || "?"}
+    <div className="relative shrink-0">
+      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-raised font-display text-xs font-medium text-text-muted">
+        {name.trim().slice(0, 1).toUpperCase() || "?"}
+      </div>
+      {online && (
+        <span
+          title="Online"
+          className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-verdigris"
+        />
+      )}
     </div>
   );
 }
@@ -234,6 +245,7 @@ export function ConversationList({
   unread,
   activeGroup,
   voicePresence,
+  onlineStatus,
   currentUserId,
   onSelectContact,
   onSelectGroupChannel,
@@ -388,7 +400,7 @@ export function ConversationList({
                   active ? "bg-surface-raised" : "hover:bg-surface-raised/60"
                 }`}
               >
-                <Avatar name={c.display_name} />
+                <Avatar name={c.display_name} online={onlineStatus[c.user_id]} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <span className="truncate text-[13.5px] font-medium text-text">{c.display_name}</span>

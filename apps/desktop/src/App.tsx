@@ -22,6 +22,7 @@ import { getAutostartEnabled, syncAutostart } from "./lib/autostart";
 import { ensureNotificationPermission, playNotificationSound, showNotificationPopup } from "./lib/notifications";
 import { isGroupMuted } from "./lib/mutedConversations";
 import { getPreferredInputDevice, getPreferredOutputDevice } from "./lib/voiceSettings";
+import { getShareOnlineStatus } from "./lib/onlineStatusSettings";
 import { playVoiceJoinSound, playVoiceLeaveSound } from "./lib/voiceSounds";
 import { getRingtoneId } from "./lib/ringtoneSettings";
 import { type RingtoneHandle, startCallingSound, startRingtone } from "./lib/ringtones";
@@ -168,6 +169,16 @@ export default function App() {
     reset: resetChatStore,
   } = useChatStore();
 
+  const [onlineStatus, setOnlineStatus] = useState<Record<string, boolean>>({});
+
+  async function refreshOnlineStatus() {
+    try {
+      setOnlineStatus(await api.getContactsOnlineStatus());
+    } catch {
+      // I lowkey dont care if this fails lol
+    }
+  }
+
   async function refreshContacts() {
     setContacts(await api.listContacts());
   }
@@ -204,7 +215,10 @@ export default function App() {
     setActiveAccountId(account.account_id);
     setUserId(account.user_id);
     setDisplayName(account.display_name);
-    await Promise.all([refreshContacts(), refreshGroups()]);
+    // Backend defaults to sharing online status; re-assert the user's
+    // actual saved preference now that a backend session exists for them.
+    api.setShareOnlineStatus(getShareOnlineStatus()).catch(() => {});
+    await Promise.all([refreshContacts(), refreshGroups(), refreshOnlineStatus()]);
     setPhase("ready");
     if (isNewAccount && localStorage.getItem(TUTORIAL_SEEN_KEY) !== "1") {
       setShowTutorial(true);
@@ -459,6 +473,14 @@ export default function App() {
       unlistenPromises.forEach((p) => p.then((fn) => fn()));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  
+  useEffect(() => {
+    if (!userId) return;
+    void refreshOnlineStatus();
+    const interval = setInterval(() => void refreshOnlineStatus(), 30_000);
+    return () => clearInterval(interval);
   }, [userId]);
 
   useEffect(() => {
@@ -829,6 +851,7 @@ export default function App() {
         unread={unread}
         activeGroup={activeGroup}
         voicePresence={voicePresence}
+        onlineStatus={onlineStatus}
         currentUserId={userId}
         onSelectContact={(userId) => select({ kind: "dm", userId })}
         onSelectGroupChannel={(channelId) =>

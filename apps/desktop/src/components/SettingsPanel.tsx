@@ -27,6 +27,7 @@ import {
   saveNotificationsEnabled,
 } from "../lib/notifications";
 import { getDndEnabled, saveDndEnabled } from "../lib/dndSettings";
+import { getShareOnlineStatus, saveShareOnlineStatus } from "../lib/onlineStatusSettings";
 import { getNotificationSoundId, saveNotificationSoundId } from "../lib/notificationSoundSettings";
 import { NOTIFICATION_SOUNDS, type NotificationSoundId, playMessageSound } from "../lib/notificationSound";
 import { OpenModal } from "../App";
@@ -229,6 +230,7 @@ export function SettingsPanel({
   const [autostartEnabled, setAutostartEnabled] = useState(getAutostartEnabled);
   const [notificationsEnabled, setNotificationsEnabled] = useState(getNotificationsEnabled);
   const [dndEnabled, setDndEnabled] = useState(getDndEnabled);
+  const [shareOnlineStatus, setShareOnlineStatus] = useState(getShareOnlineStatus);
   const [notificationSoundId, setNotificationSoundId] = useState(getNotificationSoundId);
   const [ringtoneId, setRingtoneId] = useState(getRingtoneId);
   const ringtonePreviewRef = useRef<RingtoneHandle | null>(null);
@@ -346,6 +348,13 @@ export function SettingsPanel({
     const next = !dndEnabled;
     setDndEnabled(next);
     saveDndEnabled(next);
+  }
+
+  function handleToggleShareOnlineStatus() {
+    const next = !shareOnlineStatus;
+    setShareOnlineStatus(next);
+    saveShareOnlineStatus(next);
+    api.setShareOnlineStatus(next).catch(() => {});
   }
 
   function handlePickNotificationSound(id: NotificationSoundId) {
@@ -1002,7 +1011,23 @@ export function SettingsPanel({
             )}
 
             {tab === "privacy" && (
-              <Section title="Data & privacy" danger>
+              <>
+                <Section title="Online status">
+                  <div className="mt-4 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-text">Share my online status</p>
+                      <p className="mt-1 text-xs text-text-muted">
+                        Lets contacts see when you're online. Turning this off doesn't affect
+                        whether they can still reach you, only whether they see a status dot for
+                        it. Changes can take a couple of minutes to reach contacts who already had
+                        you marked online.
+                      </p>
+                    </div>
+                    <Toggle on={shareOnlineStatus} onClick={handleToggleShareOnlineStatus} />
+                  </div>
+                </Section>
+
+                <Section title="Data & privacy" danger>
                 <div className="mt-4 flex items-center justify-between gap-3 border-b border-border pb-4">
                   <div>
                     <p className="text-sm font-medium text-text">Remove this account</p>
@@ -1063,7 +1088,8 @@ export function SettingsPanel({
                   {purging ? "Deleting…" : "Delete everything on this device"}
                 </button>
                 {purgeError && <p className="mt-2 text-xs text-danger">{purgeError}</p>}
-              </Section>
+                </Section>
+              </>
             )}
           </div>
         </div>

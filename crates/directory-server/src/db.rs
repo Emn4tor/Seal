@@ -14,7 +14,22 @@ pub fn open(path: &Path) -> anyhow::Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.execute_batch(SCHEMA)?;
+    migrate_add_share_online_status_column(&conn)?;
     Ok(conn)
+}
+
+/// Migrate the database to add the `share_online_status` column bc it missed in the initial schema.
+fn migrate_add_share_online_status_column(conn: &Connection) -> anyhow::Result<()> {
+    let has_column = conn
+        .prepare("SELECT 1 FROM pragma_table_info('presence') WHERE name = 'share_online_status'")?
+        .exists([])?;
+    if !has_column {
+        conn.execute(
+            "ALTER TABLE presence ADD COLUMN share_online_status INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 // ---- nonce / replay protection ----------------------------------------
@@ -189,12 +204,14 @@ pub fn sweep_expired_presence(conn: &Connection, now: i64) -> Result<(), AppErro
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn upsert_presence(
     conn: &Connection,
     user_id: &str,
     peer_id: &str,
     multiaddrs: &[String],
     relay_addrs: &[String],
+    share_online_status: bool,
     expires_at: i64,
     now: i64,
 ) -> Result<(), AppError> {
@@ -202,12 +219,13 @@ pub fn upsert_presence(
     let multiaddrs_json = serde_json::to_string(multiaddrs).map_err(anyhow::Error::new)?;
     let relay_addrs_json = serde_json::to_string(relay_addrs).map_err(anyhow::Error::new)?;
     conn.execute(
-        "INSERT INTO presence (user_id, peer_id, multiaddrs, relay_addrs, expires_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO presence (user_id, peer_id, multiaddrs, relay_addrs, share_online_status, expires_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(user_id) DO UPDATE SET
             peer_id = excluded.peer_id,
             multiaddrs = excluded.multiaddrs,
             relay_addrs = excluded.relay_addrs,
+            share_online_status = excluded.share_online_status,
             expires_at = excluded.expires_at,
             updated_at = excluded.updated_at",
         params![
@@ -215,6 +233,7 @@ pub fn upsert_presence(
             peer_id,
             multiaddrs_json,
             relay_addrs_json,
+            share_online_status,
             expires_at,
             now
         ],
@@ -229,7 +248,7 @@ pub fn get_presence(
 ) -> Result<Option<PresenceRecord>, AppError> {
     let row = conn
         .query_row(
-            "SELECT peer_id, multiaddrs, relay_addrs, expires_at FROM presence
+            "SELECT peer_id, multiaddrs, relay_addrs, share_online_status, expires_at FROM presence
              WHERE user_id = ?1 AND expires_at > ?2",
             params![user_id, now],
             |row| {
@@ -237,13 +256,15 @@ pub fn get_presence(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         )
         .optional()?;
 
-    let Some((peer_id, multiaddrs_json, relay_addrs_json, expires_at)) = row else {
+    let Some((peer_id, multiaddrs_json, relay_addrs_json, share_online_status, expires_at)) = row
+    else {
         return Ok(None);
     };
     let multiaddrs: Vec<String> =
@@ -256,6 +277,7 @@ pub fn get_presence(
         multiaddrs,
         relay_addrs,
         expires_at,
+        share_online_status,
     }))
 }
 

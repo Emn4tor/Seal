@@ -449,7 +449,6 @@ impl AppService {
         self.share_online_status.store(enabled, Ordering::Relaxed);
     }
 
-    
     pub fn contacts_presence_lookup_plan(
         &self,
     ) -> anyhow::Result<(

@@ -45,3 +45,4 @@ directory-server = { path = "../directory-server" }
 axum = "0.8"
 tracing-subscriber = { workspace = true }
 serial_test = "3"
+tokio = { workspace = true, features = ["test-util"] }

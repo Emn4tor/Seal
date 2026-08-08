@@ -1537,14 +1537,20 @@ mod tests {
     /// real-time tick, independent of the mixer, applying the same
     /// `declick_step` on every sample including underrun ones. Frames are
     /// pushed straight into the jitter queue `run_mixer_loop` reads from
-    /// (bypassing capture/encode/network entirely) on a deterministic but
-    /// irregular schedule that still averages the same 20ms per frame a
-    /// real sender paces at, the kind of timing variance a relay hop adds.
-    /// `multi_thread`: the producer, mixer, and consumer are three
-    /// separate timing-sensitive tasks, and a single-threaded runtime can
-    /// introduce its own scheduling delay between them under load that has
-    /// nothing to do with the jitter being tested.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    /// (bypassing capture/encode/network entirely), matching the real
+    /// sender's steady cadence except for one deliberate delivery gap: see
+    /// `GAP_AFTER_FRAME`/`GAP_EXTRA_MS` below.
+    /// `start_paused`: the producer, mixer, and consumer are three
+    /// separate timing-sensitive tasks racing real `tokio::time` timers
+    /// against each other; on real wall-clock time this test is at the
+    /// mercy of whatever the actual machine/CI runner is doing at that
+    /// moment (a loaded CI box, or Windows' much coarser ~15.6ms default
+    /// timer resolution, can each turn injected-jitter margin into
+    /// scheduling noise unrelated to the mixer logic being tested). A
+    /// paused clock makes every `sleep`/`interval` advance virtual time
+    /// deterministically instead, so the test's outcome depends only on
+    /// the mixer's actual logic, not on real-machine timing.
+    #[tokio::test(start_paused = true)]
     async fn mixer_tolerates_realistic_arrival_jitter_without_frequent_underruns() {
         const OUTPUT_RATE: u32 = 48_000;
         const CONNECTION_ID: u64 = 0;
@@ -1586,23 +1592,40 @@ mod tests {
             post_declick
         });
 
-        // The real sender (`run_send_pacer_loop`) paces sends at a perfectly
-        // steady 20ms, and so does this mixer's own ticker, but they're two
-        // independently-started real-time clocks on what would be two
-        // different machines in a real call: over a call of any real
-        // length, ordinary clock drift walks their relative phase through
-        // every possible alignment, including the unlucky one where a
-        // frame's arrival lands right on top of the tick meant to consume
-        // it. Alternating transit delay above and below `MIXER_TICK`
-        // (`ALTERNATING_TRANSIT_MS`) previews exactly that unlucky phase:
-        // it's not a contrived edge case, it's a snapshot of what a long-
-        // running real call periodically passes through regardless of how
-        // "clean" the network is. Deterministic, not random, so the test
-        // stays reproducible.
-        const FRAME_COUNT: usize = 60;
-        const ALTERNATING_TRANSIT_MS: [u64; 2] = [8, 32];
+        // The real sender (`run_send_pacer_loop`) paces sends at a steady
+        // 20ms; this delivers frames on that same steady cadence except for
+        // a run of `BURST_LEN` consecutive deliveries at `BURST_DELAY_MS`
+        // each, representing a real relay-hop congestion event (which
+        // affects a run of consecutive packets, not just one) rather than
+        // per-packet jitter. A numeric simulation of this exact scenario
+        // (see the session notes) confirmed ordinary bounded per-frame
+        // jitter, even fairly wide, never actually starves a plain FIFO
+        // queue that only drains what has already arrived: early frames
+        // bank slack that later ones draw down, so nothing here is testing
+        // that. Only a sustained run of late frames exceeds what that
+        // natural banking can absorb, which is what actually distinguishes
+        // "has a buffer" from "doesn't." Under `start_paused` there is no
+        // such thing as a near-tie: two timers due at the same virtual
+        // instant resolve in a fixed, deterministic order every run, so a
+        // test relying on "who wins the race" (as an earlier, real-wall-
+        // clock version of this test did) can't exercise a real ordering
+        // violation here, only an artifact of tokio's internal tie-
+        // breaking. An unambiguous burst, by contrast, behaves identically
+        // under virtual or real time: whether a given tick has a frame
+        // ready is a genuine ordering fact, not a coin flip.
+        const LEAD_FRAMES: usize = 20;
+        const BURST_LEN: usize = 4;
+        const BURST_DELAY_MS: u64 = 50;
+        const TRAIL_FRAMES: usize = 20;
+        let mut delivery_pattern_ms = vec![MIXER_TICK.as_millis() as u64; LEAD_FRAMES];
+        delivery_pattern_ms.extend(std::iter::repeat_n(BURST_DELAY_MS, BURST_LEN));
+        delivery_pattern_ms.extend(std::iter::repeat_n(
+            MIXER_TICK.as_millis() as u64,
+            TRAIL_FRAMES,
+        ));
+
         let mut phase = 0.0f32;
-        for i in 0..FRAME_COUNT {
+        for &delay_ms in &delivery_pattern_ms {
             let mut frame = [0i16; SAMPLES_PER_FRAME];
             for (s, sample) in frame.iter_mut().enumerate() {
                 let t = phase + s as f32 / audio::SAMPLE_RATE_HZ as f32;
@@ -1617,7 +1640,7 @@ mod tests {
                 .get_mut(&CONNECTION_ID)
                 .unwrap()
                 .push_back(frame);
-            tokio::time::sleep(Duration::from_millis(ALTERNATING_TRANSIT_MS[i % 2])).await;
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
         running.store(false, Ordering::Relaxed);
@@ -1640,29 +1663,23 @@ mod tests {
         let skip_samples = (OUTPUT_RATE as u64 * STEADY_STATE_SKIP_MS / 1000) as usize;
         let steady_state = &post_declick[skip_samples.min(post_declick.len())..];
 
-        // Rerunning this same scenario with zero injected jitter (every
-        // frame arriving at a flat 20ms) still occasionally produces up to
-        // 2 of these: `FromTargetRate::push_frame` documents a variable-
-        // length output per call, and the mixer's own 20ms ticker and this
-        // consumer's 5ms ticker are two independently-phased real-time
-        // timers, so a little rounding/scheduling noise between them is
-        // expected baseline behavior, not the network-jitter bug this test
-        // targets. What actually distinguishes "bug present" is the
-        // *scale*: unfixed, this same scenario produces 4-6 of these,
-        // consistently, every run.
-        const HARNESS_NOISE_TOLERANCE: usize = 2;
+        // Under a paused clock this is fully deterministic, not just
+        // usually-passing: replacing the burst with the same flat 20ms as
+        // everything else produces exactly 0 of these every run, and
+        // unfixed, this exact scenario produces exactly 6 every run (both
+        // verified directly, not just asserted here), so there's no
+        // harness-noise margin to account for.
         const CLICK_THRESHOLD: f32 = 0.08;
         let click_count = steady_state
             .windows(2)
             .filter(|w| (w[1] - w[0]).abs() > CLICK_THRESHOLD)
             .count();
         assert!(
-            click_count <= HARNESS_NOISE_TOLERANCE,
+            click_count == 0,
             "found {click_count} click-sized discontinuities after the first \
-             {STEADY_STATE_SKIP_MS}ms under realistic arrival jitter (baseline harness noise \
-             tops out at {HARNESS_NOISE_TOLERANCE}), a real listener would hear these as \
-             recurring crackling even though the same tone produces none under perfectly \
-             regular loopback timing"
+             {STEADY_STATE_SKIP_MS}ms under a realistic relay-hop congestion burst, a real \
+             listener would hear these as crackling even though the same tone produces none \
+             under perfectly regular delivery timing"
         );
     }
 }

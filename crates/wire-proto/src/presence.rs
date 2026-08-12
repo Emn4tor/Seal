@@ -5,6 +5,10 @@ use crate::signing::join;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceUpdateRequest {
     pub user_id: String,
+    /// Which of this account's devices is announcing — included in
+    /// `signing_bytes` so a signature can't be replayed to overwrite a
+    /// *different* device's presence row.
+    pub device_id: String,
     pub peer_id: String,
     pub multiaddrs: Vec<String>,
     pub relay_addrs: Vec<String>,
@@ -28,6 +32,7 @@ impl PresenceUpdateRequest {
             Self::DOMAIN,
             &[
                 &self.user_id,
+                &self.device_id,
                 &self.peer_id,
                 &multi,
                 &relay,
@@ -43,11 +48,20 @@ impl PresenceUpdateRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceRecord {
     pub user_id: String,
+    pub device_id: String,
     pub peer_id: String,
     pub multiaddrs: Vec<String>,
     pub relay_addrs: Vec<String>,
     pub expires_at: i64,
     pub share_online_status: bool,
+}
+
+/// Every currently-live device presence for one account — what a sender
+/// fetches to fan a message out to all of a contact's reachable devices,
+/// rather than the single record the pre-multi-device API returned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceListResponse {
+    pub devices: Vec<PresenceRecord>,
 }
 
 /// The directory server's own libp2p relay identity, if it's running one —

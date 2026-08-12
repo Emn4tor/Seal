@@ -49,6 +49,10 @@ pub struct OneTimeKeyEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadOtkRequest {
     pub user_id: String,
+    /// The device this OTK batch belongs to — each device keeps its own
+    /// independent pool (see `directory-server`'s `one_time_keys` table),
+    /// so two devices sharing an account never invalidate each other's keys.
+    pub device_id: String,
     pub keys: Vec<OneTimeKeyEntry>,
     pub fallback_key: Option<OneTimeKeyEntry>,
     pub timestamp: i64,
@@ -77,6 +81,7 @@ impl UploadOtkRequest {
             Self::DOMAIN,
             &[
                 &self.user_id,
+                &self.device_id,
                 &keys_joined,
                 &fallback_repr,
                 &ts,

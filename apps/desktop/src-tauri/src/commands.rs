@@ -8,8 +8,8 @@ use crate::account_manager::AccountManager;
 use crate::accounts;
 use crate::actor::ActorHandle;
 use crate::dto::{
-    AccountSummaryDto, AccountsStateDto, AttachmentDto, BootDecisionDto, ContactDto, ExifFieldDto,
-    GroupDto, MessageDto,
+    AccountSummaryDto, AccountsStateDto, AttachmentDto, BootDecisionDto, ContactDto, DeviceDto,
+    ExifFieldDto, GroupDto, MessageDto, PairingOfferDto,
 };
 use crate::{embedded_directory, server_config, AppPaths};
 
@@ -22,41 +22,21 @@ pub fn get_official_server_url() -> Option<String> {
     server_config::official_server_url()
 }
 
-/// The server the user chose on a previous run, if this is a returning
-/// user — lets the frontend skip asking again.
+/// Mobile builds exclude `tauri-plugin-updater` entirely, so the frontend
+/// needs to know not to show any update UI there.
 #[tauri::command]
-pub fn get_saved_server_url(paths: State<'_, AppPaths>) -> Option<String> {
-    server_config::load_saved(&paths.shared_data_dir)
+pub fn is_mobile() -> bool {
+    cfg!(any(target_os = "android", target_os = "ios"))
 }
 
-/// Persists a server choice for next launch without starting anything —
-/// used by Settings' "change server" flow, which takes effect on restart
-/// rather than trying to hot-swap a running P2P node's backend connection.
-#[tauri::command]
-pub fn save_server_url_for_next_launch(
-    paths: State<'_, AppPaths>,
-    server_url: String,
-) -> Result<(), String> {
-    server_config::save(&paths.shared_data_dir, &server_url).map_err(|e| e.to_string())
-}
-
-/// Resolves and starts the chosen backend (embedded sentinel or a real
-/// URL). Doesn't touch any account — which one to load isn't decided until
-/// `resolve_boot_account` / `create_account` / `resume_account`, since more
-/// than one can now exist on this device.
-#[tauri::command]
-pub async fn start_backend(
-    paths: State<'_, AppPaths>,
-    server_url: String,
-) -> Result<String, String> {
-    server_config::save(&paths.shared_data_dir, &server_url).map_err(|e| e.to_string())?;
-
-    let resolved_url = if server_url == server_config::EMBEDDED_SENTINEL {
-        embedded_directory::ensure_running(paths.shared_data_dir.clone()).await
+/// Resolves a raw directory choice (a real URL, or the embedded sentinel)
+/// into a dialable one, per-account so one dead server can't block another.
+async fn resolve_directory_url(shared_data_dir: &std::path::Path, raw: &str) -> String {
+    if raw == server_config::EMBEDDED_SENTINEL {
+        embedded_directory::ensure_running(shared_data_dir.to_path_buf()).await
     } else {
-        server_url
-    };
-    Ok(resolved_url)
+        raw.to_string()
+    }
 }
 
 /// The one call the frontend needs to decide what to show at startup — see
@@ -82,6 +62,8 @@ pub fn list_accounts(paths: State<'_, AppPaths>) -> AccountsStateDto {
 }
 
 /// Creates a brand-new identity, loads it, and makes it the active account.
+/// `server_url` is this account's own choice, not shared with any other
+/// account on this device.
 #[tauri::command]
 pub async fn create_account(
     app: AppHandle,
@@ -93,8 +75,9 @@ pub async fn create_account(
 ) -> Result<AccountSummaryDto, String> {
     let account_id = accounts::new_account_id();
     let dir = accounts::account_dir(&paths.shared_data_dir, &account_id);
+    let resolved_url = resolve_directory_url(&paths.shared_data_dir, &server_url).await;
 
-    let (handle, join) = ActorHandle::spawn(app, dir, server_url);
+    let (handle, join) = ActorHandle::spawn(app, dir, resolved_url);
     let (user_id, display_name) = handle.initialize(Some(display_name)).await?;
     manager.set_current(handle, join).await;
 
@@ -103,6 +86,7 @@ pub async fn create_account(
         user_id,
         display_name,
         created_at: accounts::now(),
+        directory_url: server_url,
     };
     accounts::update(&paths.shared_data_dir, &accounts_lock, |file| {
         file.accounts.push(entry.clone());
@@ -116,24 +100,26 @@ pub async fn create_account(
 /// Loads an existing identity by account id (no display name involved —
 /// its stored one is used) and makes it the active account. Used both for
 /// auto-login at boot and for an explicit "switch account" from Settings.
+/// Resolves this account's own stored `directory_url` rather than taking
+/// one from the caller, so one account's dead server can't block another.
 #[tauri::command]
 pub async fn resume_account(
     app: AppHandle,
     paths: State<'_, AppPaths>,
     manager: State<'_, AccountManager>,
     accounts_lock: State<'_, accounts::AccountsFileLock>,
-    server_url: String,
     account_id: String,
 ) -> Result<AccountSummaryDto, String> {
-    let created_at = accounts::load(&paths.shared_data_dir)
+    let (created_at, raw_url) = accounts::load(&paths.shared_data_dir)
         .accounts
         .iter()
         .find(|a| a.account_id == account_id)
-        .map(|a| a.created_at)
+        .map(|a| (a.created_at, a.directory_url.clone()))
         .ok_or_else(|| "no such account on this device".to_string())?;
+    let resolved_url = resolve_directory_url(&paths.shared_data_dir, &raw_url).await;
 
     let dir = accounts::account_dir(&paths.shared_data_dir, &account_id);
-    let (handle, join) = ActorHandle::spawn(app, dir, server_url);
+    let (handle, join) = ActorHandle::spawn(app, dir, resolved_url);
     let (user_id, display_name) = handle.initialize(None).await?;
     manager.set_current(handle, join).await;
 
@@ -145,9 +131,73 @@ pub async fn resume_account(
         user_id,
         display_name,
         created_at,
+        directory_url: raw_url,
     };
     accounts::update(&paths.shared_data_dir, &accounts_lock, |file| {
         file.accounts.retain(|a| a.account_id != account_id);
+        file.accounts.push(entry.clone());
+        file.active_account_id = Some(account_id.clone());
+    })
+    .map_err(|e| e.to_string())?;
+
+    Ok(entry.into())
+}
+
+/// Changes an existing account's directory server. Doesn't need to be the
+/// active account; takes effect next time it's resumed, not immediately.
+#[tauri::command]
+pub async fn set_account_directory_server(
+    paths: State<'_, AppPaths>,
+    accounts_lock: State<'_, accounts::AccountsFileLock>,
+    account_id: String,
+    server_url: String,
+) -> Result<(), String> {
+    accounts::update(&paths.shared_data_dir, &accounts_lock, |file| {
+        if let Some(entry) = file
+            .accounts
+            .iter_mut()
+            .find(|a| a.account_id == account_id)
+        {
+            entry.directory_url = server_url;
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Joins an account by scanning another device's pairing QR code. Unlike
+/// `create_account`/`resume_account`, there's no known `account_id` yet.
+#[tauri::command]
+pub async fn join_via_pairing(
+    app: AppHandle,
+    paths: State<'_, AppPaths>,
+    manager: State<'_, AccountManager>,
+    accounts_lock: State<'_, accounts::AccountsFileLock>,
+    server_url: String,
+    offer: PairingOfferDto,
+) -> Result<AccountSummaryDto, String> {
+    let offer = offer.to_offer()?;
+    let account_id = accounts::new_account_id();
+    let dir = accounts::account_dir(&paths.shared_data_dir, &account_id);
+    let resolved_url = resolve_directory_url(&paths.shared_data_dir, &server_url).await;
+
+    let service = p2p_core::AppService::join_via_pairing(dir, resolved_url, &offer)
+        .await
+        .map_err(|e| e.to_string())?;
+    let user_id = service.user_id();
+    let display_name = service.display_name().to_string();
+
+    let (handle, join) = ActorHandle::spawn_with_service(app, service);
+    manager.set_current(handle, join).await;
+
+    let entry = accounts::AccountEntry {
+        account_id: account_id.clone(),
+        user_id,
+        display_name,
+        created_at: accounts::now(),
+        directory_url: server_url,
+    };
+    accounts::update(&paths.shared_data_dir, &accounts_lock, |file| {
         file.accounts.push(entry.clone());
         file.active_account_id = Some(account_id.clone());
     })
@@ -292,6 +342,35 @@ pub async fn is_contact_blocked(
 #[tauri::command]
 pub async fn list_contacts(state: State<'_, AccountManager>) -> Result<Vec<ContactDto>, String> {
     state.current().await?.list_contacts().await
+}
+
+/// Mints a QR-pairing offer for a new device to scan. The frontend encodes
+/// the DTO as a QR code; `join_via_pairing` is the other end.
+#[tauri::command]
+pub async fn start_pairing(state: State<'_, AccountManager>) -> Result<PairingOfferDto, String> {
+    state.current().await?.start_pairing().await
+}
+
+/// Every device registered to this account, for the "Devices" settings
+/// screen — including which ones are currently reachable to sync against.
+#[tauri::command]
+pub async fn list_my_devices(state: State<'_, AccountManager>) -> Result<Vec<DeviceDto>, String> {
+    state.current().await?.list_my_devices().await
+}
+
+/// Manually reconciles message history with one of this account's other
+/// devices — the "Sync" button next to a device in the "Devices" settings
+/// screen. See `p2p_core::AppService::sync_with_device`.
+#[tauri::command]
+pub async fn sync_with_device(
+    state: State<'_, AccountManager>,
+    peer_device_id: String,
+) -> Result<(), String> {
+    state
+        .current()
+        .await?
+        .sync_with_device(peer_device_id)
+        .await
 }
 
 #[tauri::command]
@@ -587,12 +666,9 @@ fn strip_exif_from_image(data: Vec<u8>) -> (Vec<u8>, bool) {
     }
 }
 
-/// Opens a native "choose a file" dialog, reads the file, guesses its MIME
-/// type from the extension, and — if it's an image and `strip_exif` is
-/// set — removes its EXIF metadata losslessly (segment-level, no
-/// recompression) before it ever enters the send pipeline. `Ok(None)` if
-/// the user cancels. Rejects anything over the app-level size cap
-/// (`p2p_core::MAX_ATTACHMENT_SIZE`) before it goes any further.
+/// Opens a file dialog, reads the file, guesses MIME from the extension,
+/// and strips EXIF losslessly if it's an image and `strip_exif` is set.
+/// `Ok(None)` if cancelled; rejects anything over the size cap.
 #[tauri::command]
 pub async fn pick_attachment(
     app: AppHandle,

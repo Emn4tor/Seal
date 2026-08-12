@@ -1,0 +1,7 @@
+{
+  "identifier": "mobile-capability",
+  "description": "Capability for the main window, mobile platforms only",
+  "platforms": ["android", "iOS"],
+  "windows": ["main"],
+  "permissions": ["barcode-scanner:default"]
+}

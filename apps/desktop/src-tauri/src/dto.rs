@@ -4,14 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::accounts::{AccountEntry, BootDecision};
 
-/// One shared shape for an attachment crossing the Tauri IPC boundary in
-/// any direction: the result of `pick_attachment`, an input to
-/// `send_direct_message`/`send_group_message`, or part of a received
-/// `MessageDto`/`ChatEventDto`. `data` only ever becomes `data_base64` at
-/// this IPC boundary — Tauri would otherwise JSON-serialize `Vec<u8>` as an
-/// array of numbers, several times larger than base64 for no benefit (the
-/// same reasoning that drove the P2P wire format to bincode instead of
-/// JSON, in `crates/core/src/node.rs`).
+/// One shared shape for an attachment crossing the Tauri IPC boundary.
+/// `data` becomes `data_base64` here since Tauri would otherwise
+/// JSON-serialize `Vec<u8>` as a much larger array of numbers.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AttachmentDto {
     pub filename: String,
@@ -100,6 +95,71 @@ impl From<storage::StoredMessage> for MessageDto {
             body: m.body,
             sent_at: m.sent_at,
             attachment: m.attachment.as_ref().map(AttachmentDto::from),
+        }
+    }
+}
+
+/// JSON mirror of `p2p_core::PairingOffer` for the QR code, with the raw
+/// ephemeral pubkey as base64 (JSON has no binary type). The frontend
+/// treats it as opaque: encode to QR, decode after a scan.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PairingOfferDto {
+    pub user_id: String,
+    pub peer_id: String,
+    pub multiaddrs: Vec<String>,
+    pub relay_addrs: Vec<String>,
+    pub token: String,
+    pub ephemeral_pubkey_base64: String,
+    pub expires_at: i64,
+}
+
+impl From<p2p_core::PairingOffer> for PairingOfferDto {
+    fn from(o: p2p_core::PairingOffer) -> Self {
+        Self {
+            user_id: o.user_id,
+            peer_id: o.peer_id,
+            multiaddrs: o.multiaddrs,
+            relay_addrs: o.relay_addrs,
+            token: o.token,
+            ephemeral_pubkey_base64: STANDARD.encode(o.ephemeral_pubkey),
+            expires_at: o.expires_at,
+        }
+    }
+}
+
+impl PairingOfferDto {
+    pub fn to_offer(&self) -> Result<p2p_core::PairingOffer, String> {
+        let bytes = STANDARD
+            .decode(&self.ephemeral_pubkey_base64)
+            .map_err(|e| format!("invalid pairing offer: {e}"))?;
+        let ephemeral_pubkey: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| "invalid pairing offer: wrong ephemeral key length".to_string())?;
+        Ok(p2p_core::PairingOffer {
+            user_id: self.user_id.clone(),
+            peer_id: self.peer_id.clone(),
+            multiaddrs: self.multiaddrs.clone(),
+            relay_addrs: self.relay_addrs.clone(),
+            token: self.token.clone(),
+            ephemeral_pubkey,
+            expires_at: self.expires_at,
+        })
+    }
+}
+
+#[derive(Serialize, Clone)]
+pub struct DeviceDto {
+    pub device_id: String,
+    pub is_this_device: bool,
+    pub online: bool,
+}
+
+impl From<p2p_core::DeviceInfo> for DeviceDto {
+    fn from(d: p2p_core::DeviceInfo) -> Self {
+        Self {
+            device_id: d.device_id,
+            is_this_device: d.is_this_device,
+            online: d.online,
         }
     }
 }
@@ -194,12 +254,14 @@ impl From<storage::StoredGroup> for GroupDto {
 pub enum ChatEventDto {
     #[serde(rename = "direct_message")]
     DirectMessage {
+        message_id: String,
         from: String,
         body: String,
         attachment: Option<AttachmentDto>,
     },
     #[serde(rename = "group_message")]
     GroupMessage {
+        message_id: String,
         group_id: String,
         channel_id: String,
         from: String,
@@ -235,6 +297,13 @@ pub enum ChatEventDto {
         call_id: String,
         reason: String,
     },
+    /// A manual device sync finished; messages are already stored, the
+    /// frontend just needs to refetch conversations.
+    #[serde(rename = "sync_completed")]
+    SyncCompleted {
+        device_id: String,
+        message_count: usize,
+    },
 }
 
 impl TryFrom<p2p_core::ChatEvent> for ChatEventDto {
@@ -243,21 +312,25 @@ impl TryFrom<p2p_core::ChatEvent> for ChatEventDto {
     fn try_from(event: p2p_core::ChatEvent) -> Result<Self, ()> {
         match event {
             p2p_core::ChatEvent::DirectMessage {
+                message_id,
                 from,
                 body,
                 attachment,
             } => Ok(ChatEventDto::DirectMessage {
+                message_id,
                 from,
                 body,
                 attachment: attachment.as_ref().map(AttachmentDto::from),
             }),
             p2p_core::ChatEvent::GroupMessage {
+                message_id,
                 group_id,
                 channel_id,
                 from,
                 body,
                 attachment,
             } => Ok(ChatEventDto::GroupMessage {
+                message_id,
                 group_id,
                 channel_id,
                 from,
@@ -293,7 +366,7 @@ impl TryFrom<p2p_core::ChatEvent> for ChatEventDto {
             p2p_core::ChatEvent::CallInvited { from, call_id } => {
                 Ok(ChatEventDto::CallInvited { from, call_id })
             }
-            p2p_core::ChatEvent::CallAccepted { from, call_id } => {
+            p2p_core::ChatEvent::CallAccepted { from, call_id, .. } => {
                 Ok(ChatEventDto::CallAccepted { from, call_id })
             }
             p2p_core::ChatEvent::CallDeclined { from, call_id } => {
@@ -311,20 +384,25 @@ impl TryFrom<p2p_core::ChatEvent> for ChatEventDto {
                 call_id,
                 reason,
             }),
-            // Connection/gossip-subscription events aren't surfaced to the
-            // frontend yet. Raw `VoicePresence` is always intercepted by
-            // `AppService::next_event` (translated into
-            // `VoiceParticipantsChanged`, or swallowed if irrelevant).
-            // `GroupChannelsChanged` has no frontend shape of its own —
-            // the actor's `groups-updated` Tauri event does the real work.
-            // `GroupKeyRequested` is an internal protocol handshake that
-            // `next_event` handles and never returns, so this arm is
-            // unreachable in practice but still needed for exhaustiveness.
+            p2p_core::ChatEvent::SyncCompleted {
+                device_id,
+                messages,
+            } => Ok(ChatEventDto::SyncCompleted {
+                device_id,
+                message_count: messages.len(),
+            }),
+            // Not surfaced to the frontend: `next_event` intercepts or
+            // translates these before they'd ever reach this conversion;
+            // kept here only for match exhaustiveness.
             p2p_core::ChatEvent::Connected(_)
             | p2p_core::ChatEvent::GossipSubscribed { .. }
             | p2p_core::ChatEvent::VoicePresence { .. }
             | p2p_core::ChatEvent::GroupChannelsChanged { .. }
-            | p2p_core::ChatEvent::GroupKeyRequested { .. } => Err(()),
+            | p2p_core::ChatEvent::GroupKeyRequested { .. }
+            | p2p_core::ChatEvent::PairingRequested { .. }
+            | p2p_core::ChatEvent::PairingCompleted(_)
+            | p2p_core::ChatEvent::PairingFailed(_)
+            | p2p_core::ChatEvent::SyncRequested { .. } => Err(()),
         }
     }
 }
@@ -334,6 +412,7 @@ pub struct AccountSummaryDto {
     pub account_id: String,
     pub user_id: String,
     pub display_name: String,
+    pub directory_url: String,
 }
 
 impl From<AccountEntry> for AccountSummaryDto {
@@ -342,6 +421,7 @@ impl From<AccountEntry> for AccountSummaryDto {
             account_id: a.account_id,
             user_id: a.user_id,
             display_name: a.display_name,
+            directory_url: a.directory_url,
         }
     }
 }

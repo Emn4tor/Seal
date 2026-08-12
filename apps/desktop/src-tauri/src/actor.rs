@@ -4,16 +4,13 @@ use p2p_core::AppService;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::dto::{AttachmentDto, ChatEventDto, ContactDto, GroupDto, MessageDto};
+use crate::dto::{
+    AttachmentDto, ChatEventDto, ContactDto, DeviceDto, GroupDto, MessageDto, PairingOfferDto,
+};
 
-/// Everything the frontend can ask the app node to do. `AppService` isn't
-/// `Sync`/shareable-behind-a-plain-mutex-across-a-long-await in a way that
-/// plays nicely with also needing to continuously poll it for network
-/// events, so instead it's owned outright by one background task (`run`),
-/// and commands reach it over this channel. This sidesteps a real deadlock
-/// risk: a `Mutex<AppService>` held across `next_event().await` (which can
-/// legitimately pend for a long time) would block every other command
-/// until the next network event arrived.
+/// Everything the frontend can ask the app node to do. `AppService` is
+/// owned outright by one background task (`run`) and reached over this
+/// channel, avoiding a `Mutex` held across `next_event().await`.
 pub enum Command {
     /// `display_name` is only used when there's no stored identity yet —
     /// see `AppService::load_or_create`. Responds with `(user_id,
@@ -174,6 +171,19 @@ pub enum Command {
     GetContactsOnlineStatus {
         respond_to: oneshot::Sender<Result<std::collections::HashMap<String, bool>, String>>,
     },
+    /// Mints a QR-pairing offer for a new device to scan. The joining
+    /// side's half runs before an `AppService` even exists — see
+    /// `commands::join_via_pairing`.
+    StartPairing {
+        respond_to: oneshot::Sender<Result<PairingOfferDto, String>>,
+    },
+    ListMyDevices {
+        respond_to: oneshot::Sender<Result<Vec<DeviceDto>, String>>,
+    },
+    SyncWithDevice {
+        peer_device_id: String,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Clone)]
@@ -196,6 +206,18 @@ impl ActorHandle {
     ) -> (Self, tauri::async_runtime::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(32);
         let join = tauri::async_runtime::spawn(run(app, data_dir, directory_url, rx));
+        (Self { tx }, join)
+    }
+
+    /// Like `spawn`, but wraps an `AppService` that's already been built —
+    /// used by `commands::join_via_pairing`, which has no
+    /// `Command::Initialize` step left to do.
+    pub fn spawn_with_service(
+        app: AppHandle,
+        service: AppService,
+    ) -> (Self, tauri::async_runtime::JoinHandle<()>) {
+        let (tx, rx) = mpsc::channel(32);
+        let join = tauri::async_runtime::spawn(run_initialized(app, service, rx));
         (Self { tx }, join)
     }
 
@@ -524,6 +546,24 @@ impl ActorHandle {
         self.call(|respond_to| Command::GetVoiceSpeakingParticipants { respond_to })
             .await?
     }
+
+    pub async fn start_pairing(&self) -> Result<PairingOfferDto, String> {
+        self.call(|respond_to| Command::StartPairing { respond_to })
+            .await?
+    }
+
+    pub async fn list_my_devices(&self) -> Result<Vec<DeviceDto>, String> {
+        self.call(|respond_to| Command::ListMyDevices { respond_to })
+            .await?
+    }
+
+    pub async fn sync_with_device(&self, peer_device_id: String) -> Result<(), String> {
+        self.call(|respond_to| Command::SyncWithDevice {
+            peer_device_id,
+            respond_to,
+        })
+        .await?
+    }
 }
 
 async fn run(
@@ -579,46 +619,66 @@ async fn run(
                     other => reject_not_initialized(other),
                 }
             }
-            Some(_) => {
-                tokio::select! {
-                    maybe_cmd = rx.recv() => {
-                        let Some(cmd) = maybe_cmd else { return };
-                        handle_command(&app, service.as_mut().expect("service is Some in this branch"), cmd).await;
-                    }
-                    event = service.as_mut().expect("service is Some in this branch").next_event() => {
-                        // `AppService::next_event` already auto-accepts group
-                        // invites and self-heals unknown-sender contacts
-                        // internally; this just tells the frontend to refetch
-                        // the lists that might have just changed.
-                        match &event {
-                            p2p_core::ChatEvent::GroupKeyReceived { .. }
-                            | p2p_core::ChatEvent::GroupChannelsChanged { .. } => {
-                                let _ = app.emit("groups-updated", ());
-                            }
-                            p2p_core::ChatEvent::DirectMessage { .. }
-                            | p2p_core::ChatEvent::CallInvited { .. } => {
-                                // `CallInvited` self-heals an unknown caller
-                                // into a contact the same way `DirectMessage`
-                                // does (see `AppService::handle_call_invited`)
-                                // — without this, a call from someone not
-                                // already a contact would show their raw ID
-                                // in the incoming-call UI until something
-                                // else happened to refresh the list.
-                                let _ = app.emit("contacts-updated", ());
-                            }
-                            _ => {}
-                        }
-                        if let Ok(dto) = ChatEventDto::try_from(event) {
-                            let _ = app.emit("chat-event", dto);
-                        }
-                    }
-                    _ = voice_heartbeat.tick() => {
-                        service.as_mut().expect("service is Some in this branch").maybe_send_voice_heartbeat();
-                    }
+            Some(svc) => {
+                if !run_initialized_tick(&app, svc, &mut rx, &mut voice_heartbeat).await {
+                    return;
                 }
             }
         }
     }
+}
+
+/// Runs the post-initialization event loop for an `AppService` that's
+/// already built — the pairing-join path has no `Command::Initialize`
+/// step to wait through.
+async fn run_initialized(app: AppHandle, mut service: AppService, mut rx: mpsc::Receiver<Command>) {
+    let mut voice_heartbeat = tokio::time::interval(std::time::Duration::from_secs(1));
+    loop {
+        if !run_initialized_tick(&app, &mut service, &mut rx, &mut voice_heartbeat).await {
+            return;
+        }
+    }
+}
+
+/// One iteration of the post-initialization select loop, shared by `run`
+/// and `run_initialized`. Returns `false` once the command channel has
+/// closed, signaling the caller to stop looping and drop the `AppService`.
+async fn run_initialized_tick(
+    app: &AppHandle,
+    service: &mut AppService,
+    rx: &mut mpsc::Receiver<Command>,
+    voice_heartbeat: &mut tokio::time::Interval,
+) -> bool {
+    tokio::select! {
+        maybe_cmd = rx.recv() => {
+            let Some(cmd) = maybe_cmd else { return false };
+            handle_command(app, service, cmd).await;
+        }
+        event = service.next_event() => {
+            // `next_event` already auto-accepts group invites and
+            // self-heals unknown senders; this just refreshes the frontend.
+            match &event {
+                p2p_core::ChatEvent::GroupKeyReceived { .. }
+                | p2p_core::ChatEvent::GroupChannelsChanged { .. } => {
+                    let _ = app.emit("groups-updated", ());
+                }
+                p2p_core::ChatEvent::DirectMessage { .. }
+                | p2p_core::ChatEvent::CallInvited { .. } => {
+                    // `CallInvited` self-heals an unknown caller into a
+                    // contact the same way `DirectMessage` does.
+                    let _ = app.emit("contacts-updated", ());
+                }
+                _ => {}
+            }
+            if let Ok(dto) = ChatEventDto::try_from(event) {
+                let _ = app.emit("chat-event", dto);
+            }
+        }
+        _ = voice_heartbeat.tick() => {
+            service.maybe_send_voice_heartbeat();
+        }
+    }
+    true
 }
 
 fn reject_not_initialized(cmd: Command) {
@@ -725,6 +785,15 @@ fn reject_not_initialized(cmd: Command) {
             let _ = respond_to.send(Err(err()));
         }
         Command::GetContactsOnlineStatus { respond_to } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::StartPairing { respond_to } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::ListMyDevices { respond_to } => {
+            let _ = respond_to.send(Err(err()));
+        }
+        Command::SyncWithDevice { respond_to, .. } => {
             let _ = respond_to.send(Err(err()));
         }
     }
@@ -1035,6 +1104,31 @@ async fn handle_command(app: &AppHandle, service: &mut AppService, cmd: Command)
                 }
                 Err(e) => Err(e.to_string()),
             };
+            let _ = respond_to.send(result);
+        }
+        Command::StartPairing { respond_to } => {
+            let result = service
+                .start_pairing()
+                .map(PairingOfferDto::from)
+                .map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
+        Command::ListMyDevices { respond_to } => {
+            let result = service
+                .list_my_devices()
+                .await
+                .map(|v| v.into_iter().map(DeviceDto::from).collect())
+                .map_err(|e| e.to_string());
+            let _ = respond_to.send(result);
+        }
+        Command::SyncWithDevice {
+            peer_device_id,
+            respond_to,
+        } => {
+            let result = service
+                .sync_with_device(&peer_device_id)
+                .await
+                .map_err(|e| e.to_string());
             let _ = respond_to.send(result);
         }
     }

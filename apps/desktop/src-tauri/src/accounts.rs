@@ -16,6 +16,10 @@ pub struct AccountEntry {
     pub user_id: String,
     pub display_name: String,
     pub created_at: i64,
+    /// This account's own directory server (a real URL, or
+    /// `server_config::EMBEDDED_SENTINEL`), resolved independently of
+    /// every other account on this device.
+    pub directory_url: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -53,15 +57,9 @@ pub fn load(shared_data_dir: &Path) -> AccountsFile {
         .unwrap_or_default()
 }
 
-/// Guards every `load` -> mutate -> `save` sequence against another Tauri
-/// command doing the same thing at the same time. Without this, two
-/// commands racing (e.g. a doubly-fired "create account" click before the
-/// button disables) could each load the same pre-mutation snapshot, and
-/// whichever saves last silently overwrites the other's change, even
-/// though both changes exist on disk (a fresh keychain entry, an identity
-/// directory), just not both recorded in `accounts.json`. One process-wide
-/// lock is enough since it's this one JSON file for this one app process,
-/// not a resource shared across processes.
+/// Guards every `load` -> mutate -> `save` sequence against a racing
+/// command overwriting the same pre-mutation snapshot. One process-wide
+/// lock is enough: it's one JSON file for one app process.
 #[derive(Default)]
 pub struct AccountsFileLock(std::sync::Mutex<()>);
 
@@ -148,6 +146,7 @@ mod tests {
             user_id: format!("user-{account_id}"),
             display_name: display_name.to_string(),
             created_at: 0,
+            directory_url: "https://directory.example.com".to_string(),
         }
     }
 

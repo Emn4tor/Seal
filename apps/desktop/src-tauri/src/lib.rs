@@ -9,32 +9,26 @@ mod server_config;
 use std::path::PathBuf;
 
 use account_manager::AccountManager;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, WindowEvent};
+use tauri::Manager;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri::WindowEvent;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Filesystem locations resolved once at startup and needed before any
-/// backend is running. `shared_data_dir` is where `server.json` and
-/// `accounts.json` live; each account's own data lives under
-/// `shared_data_dir/accounts/<account_id>/` (see the `accounts` module) —
-/// there's no longer a single static "the" profile dir, since which account
-/// is active isn't decided until after this is set up.
+/// Filesystem locations resolved once at startup. `shared_data_dir` is
+/// where `accounts.json` lives; each account's own data lives under
+/// `shared_data_dir/accounts/<account_id>/` (see the `accounts` module).
 pub struct AppPaths {
     pub shared_data_dir: PathBuf,
 }
 
-/// Sets up logging to both stdout and a daily-rotating file under
-/// `<app_data_dir>/logs/` — on by default at `info`, not only when
-/// `RUST_LOG` happens to be set. Debugging a real report used to mean
-/// asking someone to relaunch with `RUST_LOG=debug` and capture their
-/// terminal, which two `npm run tauri dev` windows at once (see
-/// `apps/desktop/scripts/tauri.mjs`) makes awkward — a file that's always
-/// being written means the logs from whatever just happened are already on
-/// disk. `RUST_LOG`, when set, still wins and applies to both outputs:
-/// `EnvFilter::try_from_default_env` only falls back to the `info` default
-/// when it's absent.
+/// Sets up logging to stdout and a daily-rotating file under
+/// `<app_data_dir>/logs/`, on by default at `info`. `RUST_LOG`, when set,
+/// still wins for both outputs.
 fn init_logging(
     shared_data_dir: &std::path::Path,
 ) -> Option<tracing_appender::non_blocking::WorkerGuard> {
@@ -76,7 +70,8 @@ fn init_logging(
 /// Shows and focuses the main window — used by the tray icon menu's "Open
 /// Seal" item (shown on both left- and right-click) and macOS's
 /// Dock-icon-click ("reopen") event, both of which need to undo the same
-/// hide-to-tray state.
+/// hide-to-tray state. Desktop-only: no tray on mobile.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -84,19 +79,107 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Builds the tray icon/menu and wires the close button to hide the
+/// window instead of quitting. Desktop-only: mobile owns its own app
+/// lifecycle (backgrounding, not a close event).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn setup_desktop_tray(app: &tauri::App) -> tauri::Result<()> {
+    // Closing the main window hides it instead of quitting — Seal keeps
+    // running in the tray so it can still receive and notify.
+    if let Some(window) = app.get_webview_window("main") {
+        let window_to_hide = window.clone();
+        window.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window_to_hide.hide();
+            }
+        });
+    }
+
+    let show_item = MenuItem::with_id(app, "show", "Open Seal", true, None::<&str>)?;
+    let toggle_mic_item =
+        MenuItem::with_id(app, "toggle_mic", "Toggle Mic Mute", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit Seal", true, None::<&str>)?;
+    let tray_menu = Menu::with_items(
+        app,
+        &[
+            &show_item,
+            &toggle_mic_item,
+            &PredefinedMenuItem::separator(app)?,
+            &quit_item,
+        ],
+    )?;
+
+    // `default_window_icon()` can be `None` with no icon resource bundled;
+    // degrade to a plain tray icon rather than failing to launch.
+    let mut tray_builder = TrayIconBuilder::new()
+        .menu(&tray_menu)
+        // Left-click shows the same menu as right-click now, instead of
+        // reopening directly; "Open Seal" in the menu covers that case.
+        .show_menu_on_left_click(true);
+    if let Some(icon) = app.default_window_icon() {
+        tray_builder = tray_builder.icon(icon.clone());
+    }
+    tray_builder
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "toggle_mic" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    match app.state::<AccountManager>().current().await {
+                        Ok(handle) => {
+                            let _ = handle.toggle_mic_muted().await;
+                        }
+                        // No account loaded, so no call to mute;
+                        // show the window instead of doing nothing.
+                        Err(_) => show_main_window(&app),
+                    }
+                });
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+    let builder = tauri::Builder::default();
+
+    // Process/updater plugins are desktop-only; mobile updates go through
+    // the App/Play Store instead.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_process::init());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init());
+
+    // Push-to-talk is a global shortcut; mobile has no such API. An
+    // on-screen hold-to-talk control is later work.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+
+    // Launch-at-login is a desktop OS concept; mobile apps don't autostart
+    // themselves.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None,
+    ));
+
+    let builder = builder.plugin(tauri_plugin_notification::init());
+
+    // QR-pairing's camera scanner — the upstream plugin only ships an
+    // Android/iOS implementation, no desktop backend.
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+
+    builder
         .setup(|app| {
             let shared_data_dir = app.path().app_data_dir()?;
             // `app_data_dir()` only resolves the conventional path — it
@@ -116,94 +199,28 @@ pub fn run() {
             app.manage(AccountManager::new());
             app.manage(accounts::AccountsFileLock::default());
 
-            // No backend and no account is started here anymore — the
-            // frontend calls `get_saved_server_url`/`get_official_server_url`
-            // then `start_backend`, then `resolve_boot_account` to decide
-            // which account (if any) to load automatically.
+            // No account loaded here; the frontend calls
+            // `resolve_boot_account` then `create_account`/`resume_account`.
 
-            // Closing the main window hides it instead of quitting — Seal
-            // keeps running in the tray/menu bar so messages still arrive
-            // and notify. The app only actually exits via the tray menu's
-            // "Quit Seal" or the OS's own quit shortcut (Cmd+Q), neither of
-            // which goes through this window-level event.
-            if let Some(window) = app.get_webview_window("main") {
-                let window_to_hide = window.clone();
-                window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = window_to_hide.hide();
-                    }
-                });
-            }
-
-            let show_item = MenuItem::with_id(app, "show", "Open Seal", true, None::<&str>)?;
-            let toggle_mic_item =
-                MenuItem::with_id(app, "toggle_mic", "Toggle Mic Mute", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit Seal", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(
-                app,
-                &[
-                    &show_item,
-                    &toggle_mic_item,
-                    &PredefinedMenuItem::separator(app)?,
-                    &quit_item,
-                ],
-            )?;
-
-            // `default_window_icon()` can come back `None` on a platform/build
-            // combination with no icon resource bundled. Degrading to a
-            // tray icon with no custom image is better than the whole app
-            // failing to launch over it.
-            let mut tray_builder = TrayIconBuilder::new()
-                .menu(&tray_menu)
-                // Left-click showing the same menu as right-click (rather
-                // than the old behavior of left-click reopening the window
-                // directly) is the whole point — `Menu::with_items`+`.menu()`
-                // already makes the OS show it on right-click for free, this
-                // is what actually needed to change. "Open Seal" in the menu
-                // covers the direct-reopen case that used to be left-click's
-                // own hardcoded behavior.
-                .show_menu_on_left_click(true);
-            if let Some(icon) = app.default_window_icon() {
-                tray_builder = tray_builder.icon(icon.clone());
-            }
-            tray_builder
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => show_main_window(app),
-                    "toggle_mic" => {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            match app.state::<AccountManager>().current().await {
-                                Ok(handle) => {
-                                    let _ = handle.toggle_mic_muted().await;
-                                }
-                                // No account loaded (e.g. still on the
-                                // login/picker screen), so there's no voice
-                                // call to mute, surface the window instead
-                                // of a click that visibly does nothing at
-                                // all.
-                                Err(_) => show_main_window(&app),
-                            }
-                        });
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .build(app)?;
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            setup_desktop_tray(app)?;
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_official_server_url,
-            commands::get_saved_server_url,
-            commands::start_backend,
-            commands::save_server_url_for_next_launch,
+            commands::is_mobile,
             commands::resolve_boot_account,
             commands::list_accounts,
             commands::create_account,
             commands::resume_account,
+            commands::set_account_directory_server,
+            commands::join_via_pairing,
             commands::rename_account,
             commands::remove_account,
+            commands::start_pairing,
+            commands::list_my_devices,
+            commands::sync_with_device,
             commands::add_contact,
             commands::remove_contact,
             commands::block_contact,

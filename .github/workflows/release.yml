@@ -226,25 +226,8 @@ jobs:
       # step switched to a real `--export-method`, and an upload step
       # added after it (the `publish-android` job above is the template
       # for "upload to the same draft release via `gh release upload`").
-      #
-      # On a completely fresh checkout, the *first* `xcodebuild archive`
-      # invocation reliably fails with "libapp.a couldn't be opened",
-      # even though the "Build Rust Code" script phase correctly declares
-      # it as an output (`outputPaths` in project.pbxproj) and is marked
-      # to always re-run (`alwaysOutOfDate = 1`), and even after
-      # pre-creating a placeholder at that exact path — Xcode's build
-      # graph genuinely never runs the script phase at all on that first
-      # attempt. A *second* invocation right after always succeeds; this
-      # is a known class of Xcode quirk on an unindexed project (the
-      # first archive triggers a full workspace index, which an already
-      # -running build doesn't wait for), commonly worked around in other
-      # cross-compiled-native-library iOS CI setups by simply discarding
-      # the first attempt's failure and building again.
       - name: Build and archive (unsigned, validates the build only)
         working-directory: apps/desktop
         env:
           CARGO_BUILD_RUSTC_WRAPPER: ""
-        run: |
-          npm run tauri ios build -- --target aarch64 --no-sign --archive-only --ci || \
-            echo "First archive attempt failed (expected on a fresh checkout) — retrying once."
-          npm run tauri ios build -- --target aarch64 --no-sign --archive-only --ci
+        run: npm run tauri ios build -- --target aarch64 --no-sign --archive-only --ci

@@ -15,7 +15,6 @@
 		4EB31719E5BA4F1D7D05E3F5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5D9B1A5350D90F61AD5C52B0 /* Assets.xcassets */; };
 		7E0E52D89107A801AD87E261 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C1884EE328BA41280C18F605 /* UIKit.framework */; };
 		896EF8EF42FC1C873E11B011 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 74836CA5EB5832243D76DD9D /* libapp.a */; };
-		9615A2C9DB979608A93CF72A /* libapp.a in Resources */ = {isa = PBXBuildFile; fileRef = 8AB56B8219EE809C5C3185CC /* libapp.a */; };
 		9C6FC66F2B167A7C04BC33F4 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A7C57ACD09B24C3F2EC238B5 /* CoreGraphics.framework */; };
 		A803E492E789017EFD4D2590 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = B62BC3012357D04BFD6A9DF7 /* assets */; };
 		AE054C7456CE7E64E7DB79EC /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 94E8CA94E8B2A7BC7F1B7394 /* main.mm */; };
@@ -36,7 +35,6 @@
 		7A2559D9FA42404B609B8ACF /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		7A35E7E59E2418667E34196C /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		8A97AC27801ED2FA82B23A47 /* accounts.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = accounts.rs; sourceTree = "<group>"; };
-		8AB56B8219EE809C5C3185CC /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		93E9AA452B776C93B2E558EB /* Seal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Seal.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		94E8CA94E8B2A7BC7F1B7394 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
 		9505EA6435583CE0FCCB9BB1 /* actor.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = actor.rs; sourceTree = "<group>"; };
@@ -76,7 +74,6 @@
 		1932459B89178EA383CD968A /* Externals */ = {
 			isa = PBXGroup;
 			children = (
-				563BC18EF66D8E40FF914BD2 /* arm64 */,
 			);
 			path = Externals;
 			sourceTree = "<group>";
@@ -103,14 +100,6 @@
 				F4A1F3984D538F7D05B11838 /* desktop */,
 			);
 			path = Sources;
-			sourceTree = "<group>";
-		};
-		563BC18EF66D8E40FF914BD2 /* arm64 */ = {
-			isa = PBXGroup;
-			children = (
-				C2C112D649F6188374EBFBC1 /* debug */,
-			);
-			path = arm64;
 			sourceTree = "<group>";
 		};
 		609601DF1C93CF5931ED567F /* bindings */ = {
@@ -145,14 +134,6 @@
 			);
 			name = src;
 			path = ../../src;
-			sourceTree = "<group>";
-		};
-		C2C112D649F6188374EBFBC1 /* debug */ = {
-			isa = PBXGroup;
-			children = (
-				8AB56B8219EE809C5C3185CC /* libapp.a */,
-			);
-			path = debug;
 			sourceTree = "<group>";
 		};
 		C422CF061E3084F9C77E371F /* Products */ = {
@@ -246,7 +227,6 @@
 				4EB31719E5BA4F1D7D05E3F5 /* Assets.xcassets in Resources */,
 				453463D8A33F2C1835E8E179 /* LaunchScreen.storyboard in Resources */,
 				A803E492E789017EFD4D2590 /* assets in Resources */,
-				9615A2C9DB979608A93CF72A /* libapp.a in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

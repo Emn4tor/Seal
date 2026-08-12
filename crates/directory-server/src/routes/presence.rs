@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, State};
-use wire_proto::{PresenceRecord, PresenceUpdateRequest};
+use wire_proto::{PresenceListResponse, PresenceRecord, PresenceUpdateRequest};
 
 use crate::error::AppError;
 use crate::state::{AppState, now_secs};
@@ -13,12 +13,12 @@ const MAX_PRESENCE_TTL_SECS: u64 = 300;
 
 pub async fn put_presence(
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Path((user_id, device_id)): Path<(String, String)>,
     Json(req): Json<PresenceUpdateRequest>,
 ) -> Result<Json<PresenceRecord>, AppError> {
-    if user_id != req.user_id {
+    if user_id != req.user_id || device_id != req.device_id {
         return Err(AppError::BadRequest(
-            "path user_id does not match request body".into(),
+            "path does not match request body".into(),
         ));
     }
     let now = now_secs();
@@ -35,6 +35,7 @@ pub async fn put_presence(
             db::upsert_presence(
                 conn,
                 &req.user_id,
+                &req.device_id,
                 &req.peer_id,
                 &req.multiaddrs,
                 &req.relay_addrs,
@@ -44,6 +45,7 @@ pub async fn put_presence(
             )?;
             Ok(PresenceRecord {
                 user_id: req.user_id,
+                device_id: req.device_id,
                 peer_id: req.peer_id,
                 multiaddrs: req.multiaddrs,
                 relay_addrs: req.relay_addrs,
@@ -55,13 +57,19 @@ pub async fn put_presence(
         .map(Json)
 }
 
-pub async fn get_presence(
+/// Every currently-live device of this account, for a sender to fan a
+/// message out to. Replaces the old single-record `get_presence` now that
+/// an account can have more than one reachable device at once.
+pub async fn get_all_presence(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-) -> Result<Json<PresenceRecord>, AppError> {
+) -> Result<Json<PresenceListResponse>, AppError> {
     let now = now_secs();
     state
-        .with_conn(move |conn| db::get_presence(conn, &user_id, now)?.ok_or(AppError::NotFound))
+        .with_conn(move |conn| {
+            let devices = db::get_presence_all(conn, &user_id, now)?;
+            Ok(PresenceListResponse { devices })
+        })
         .await
         .map(Json)
 }

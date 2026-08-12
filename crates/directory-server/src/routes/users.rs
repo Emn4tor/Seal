@@ -78,6 +78,7 @@ pub async fn upload_otk(
             db::upload_otks(
                 conn,
                 &req.user_id,
+                &req.device_id,
                 &req.keys,
                 req.fallback_key.as_ref(),
                 now,
@@ -90,12 +91,12 @@ pub async fn upload_otk(
 
 pub async fn claim_otk(
     State(state): State<AppState>,
-    Path(user_id): Path<String>,
+    Path((user_id, device_id)): Path<(String, String)>,
 ) -> Result<Json<ClaimedOtk>, AppError> {
     state
         .with_conn(move |conn| {
             db::get_user(conn, &user_id)?.ok_or(AppError::NotFound)?;
-            db::claim_otk(conn, &user_id)?.ok_or(AppError::NotFound)
+            db::claim_otk(conn, &user_id, &device_id)?.ok_or(AppError::NotFound)
         })
         .await
         .map(Json)

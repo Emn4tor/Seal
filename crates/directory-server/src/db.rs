@@ -15,6 +15,7 @@ pub fn open(path: &Path) -> anyhow::Result<Connection> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.execute_batch(SCHEMA)?;
     migrate_add_share_online_status_column(&conn)?;
+    migrate_presence_and_otk_add_device_id(&conn)?;
     Ok(conn)
 }
 
@@ -32,17 +33,64 @@ fn migrate_add_share_online_status_column(conn: &Connection) -> anyhow::Result<(
     Ok(())
 }
 
+/// Migrates `presence`/`one_time_keys` to one row per device. SQLite can't
+/// `ALTER TABLE` a primary key, so this rebuilds both tables; existing rows
+/// carry forward under a synthetic `"legacy"` device_id.
+fn migrate_presence_and_otk_add_device_id(conn: &Connection) -> anyhow::Result<()> {
+    let presence_has_device_id = conn
+        .prepare("SELECT 1 FROM pragma_table_info('presence') WHERE name = 'device_id'")?
+        .exists([])?;
+    if !presence_has_device_id {
+        conn.execute_batch(
+            "CREATE TABLE presence_new (
+                user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                peer_id TEXT NOT NULL,
+                multiaddrs TEXT NOT NULL,
+                relay_addrs TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                share_online_status INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (user_id, device_id)
+             );
+             INSERT INTO presence_new (user_id, device_id, peer_id, multiaddrs, relay_addrs, expires_at, updated_at, share_online_status)
+                SELECT user_id, 'legacy', peer_id, multiaddrs, relay_addrs, expires_at, updated_at, share_online_status FROM presence;
+             DROP TABLE presence;
+             ALTER TABLE presence_new RENAME TO presence;",
+        )?;
+    }
+
+    let otk_has_device_id = conn
+        .prepare("SELECT 1 FROM pragma_table_info('one_time_keys') WHERE name = 'device_id'")?
+        .exists([])?;
+    if !otk_has_device_id {
+        conn.execute_batch(
+            "CREATE TABLE one_time_keys_new (
+                user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                key_id TEXT NOT NULL,
+                public_key TEXT NOT NULL,
+                is_fallback INTEGER NOT NULL DEFAULT 0,
+                claimed INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, device_id, key_id)
+             );
+             INSERT INTO one_time_keys_new (user_id, device_id, key_id, public_key, is_fallback, claimed, created_at)
+                SELECT user_id, 'legacy', key_id, public_key, is_fallback, claimed, created_at FROM one_time_keys;
+             DROP TABLE one_time_keys;
+             ALTER TABLE one_time_keys_new RENAME TO one_time_keys;",
+        )?;
+    }
+    Ok(())
+}
+
 // ---- nonce / replay protection ----------------------------------------
 
 const NONCE_WINDOW_SECS: i64 = 600;
 
-/// A generous cap on how many signed requests one identity can make within
-/// `NONCE_WINDOW_SECS`, piggybacking on the nonce table every signed write
-/// already inserts into rather than needing a new schema, middleware, or
-/// per-connection state to rate-limit at all. Not meant to bound legitimate
-/// usage, a normal chat session or the 150s presence heartbeat are far
-/// under this, only to blunt a compromised or malicious identity flooding
-/// writes (presence spam, OTK-upload spam, group-create spam, ...).
+/// Cap on signed requests per identity within `NONCE_WINDOW_SECS`,
+/// piggybacking on the nonce table rather than a new schema. Only meant
+/// to blunt a malicious identity flooding writes, not bound normal usage.
 pub const MAX_REQUESTS_PER_WINDOW: i64 = 300;
 
 pub fn record_nonce_or_reject(
@@ -120,26 +168,27 @@ pub fn get_user(conn: &Connection, user_id: &str) -> Result<Option<UserRecord>, 
 pub fn upload_otks(
     conn: &Connection,
     user_id: &str,
+    device_id: &str,
     keys: &[wire_proto::OneTimeKeyEntry],
     fallback: Option<&wire_proto::OneTimeKeyEntry>,
     now: i64,
 ) -> Result<(), AppError> {
     for k in keys {
         conn.execute(
-            "INSERT OR REPLACE INTO one_time_keys (user_id, key_id, public_key, is_fallback, claimed, created_at)
-             VALUES (?1, ?2, ?3, 0, 0, ?4)",
-            params![user_id, k.key_id, k.public_key, now],
+            "INSERT OR REPLACE INTO one_time_keys (user_id, device_id, key_id, public_key, is_fallback, claimed, created_at)
+             VALUES (?1, ?2, ?3, ?4, 0, 0, ?5)",
+            params![user_id, device_id, k.key_id, k.public_key, now],
         )?;
     }
     if let Some(fb) = fallback {
         conn.execute(
-            "DELETE FROM one_time_keys WHERE user_id = ?1 AND is_fallback = 1",
-            params![user_id],
+            "DELETE FROM one_time_keys WHERE user_id = ?1 AND device_id = ?2 AND is_fallback = 1",
+            params![user_id, device_id],
         )?;
         conn.execute(
-            "INSERT OR REPLACE INTO one_time_keys (user_id, key_id, public_key, is_fallback, claimed, created_at)
-             VALUES (?1, ?2, ?3, 1, 0, ?4)",
-            params![user_id, fb.key_id, fb.public_key, now],
+            "INSERT OR REPLACE INTO one_time_keys (user_id, device_id, key_id, public_key, is_fallback, claimed, created_at)
+             VALUES (?1, ?2, ?3, ?4, 1, 0, ?5)",
+            params![user_id, device_id, fb.key_id, fb.public_key, now],
         )?;
     }
     Ok(())
@@ -148,13 +197,14 @@ pub fn upload_otks(
 pub fn claim_otk(
     conn: &Connection,
     user_id: &str,
+    device_id: &str,
 ) -> Result<Option<wire_proto::ClaimedOtk>, AppError> {
     let one_time = conn
         .query_row(
             "SELECT key_id, public_key FROM one_time_keys
-             WHERE user_id = ?1 AND is_fallback = 0 AND claimed = 0
+             WHERE user_id = ?1 AND device_id = ?2 AND is_fallback = 0 AND claimed = 0
              ORDER BY created_at ASC LIMIT 1",
-            params![user_id],
+            params![user_id, device_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?;
@@ -162,8 +212,8 @@ pub fn claim_otk(
     if let Some((key_id, public_key)) = one_time {
         // Single-use: delete immediately so it can never be claimed twice.
         conn.execute(
-            "DELETE FROM one_time_keys WHERE user_id = ?1 AND key_id = ?2",
-            params![user_id, key_id],
+            "DELETE FROM one_time_keys WHERE user_id = ?1 AND device_id = ?2 AND key_id = ?3",
+            params![user_id, device_id, key_id],
         )?;
         return Ok(Some(wire_proto::ClaimedOtk {
             key_id,
@@ -175,8 +225,8 @@ pub fn claim_otk(
     // No one-time keys left: fall back to the reusable fallback key, if any.
     let fallback = conn
         .query_row(
-            "SELECT key_id, public_key FROM one_time_keys WHERE user_id = ?1 AND is_fallback = 1",
-            params![user_id],
+            "SELECT key_id, public_key FROM one_time_keys WHERE user_id = ?1 AND device_id = ?2 AND is_fallback = 1",
+            params![user_id, device_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?;
@@ -190,15 +240,9 @@ pub fn claim_otk(
 
 // ---- presence -------------------------------------------------------------
 
-/// Deletes presence rows whose TTL has already lapsed. `get_presence`
-/// already filters these out of reads (`WHERE expires_at > now`), so this
-/// isn't needed for correctness — it's for minimizing what a seized/leaked
-/// copy of the database actually contains. Without it, an expired row (a
-/// peer_id <-> IP/relay-circuit mapping) just sits there forever once a user
-/// stops heartbeating, readable in a disk dump long after it stopped being
-/// true. Called opportunistically on every presence write, same pattern as
-/// the nonce sweep above, so it stays current without needing its own
-/// scheduled job.
+/// Deletes lapsed presence rows. Not needed for correctness, but keeps a
+/// seized/leaked DB copy from holding stale peer_id/IP mappings. Called
+/// opportunistically on writes, same pattern as the nonce sweep.
 pub fn sweep_expired_presence(conn: &Connection, now: i64) -> Result<(), AppError> {
     conn.execute("DELETE FROM presence WHERE expires_at < ?1", params![now])?;
     Ok(())
@@ -208,6 +252,7 @@ pub fn sweep_expired_presence(conn: &Connection, now: i64) -> Result<(), AppErro
 pub fn upsert_presence(
     conn: &Connection,
     user_id: &str,
+    device_id: &str,
     peer_id: &str,
     multiaddrs: &[String],
     relay_addrs: &[String],
@@ -219,9 +264,9 @@ pub fn upsert_presence(
     let multiaddrs_json = serde_json::to_string(multiaddrs).map_err(anyhow::Error::new)?;
     let relay_addrs_json = serde_json::to_string(relay_addrs).map_err(anyhow::Error::new)?;
     conn.execute(
-        "INSERT INTO presence (user_id, peer_id, multiaddrs, relay_addrs, share_online_status, expires_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(user_id) DO UPDATE SET
+        "INSERT INTO presence (user_id, device_id, peer_id, multiaddrs, relay_addrs, share_online_status, expires_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(user_id, device_id) DO UPDATE SET
             peer_id = excluded.peer_id,
             multiaddrs = excluded.multiaddrs,
             relay_addrs = excluded.relay_addrs,
@@ -230,6 +275,7 @@ pub fn upsert_presence(
             updated_at = excluded.updated_at",
         params![
             user_id,
+            device_id,
             peer_id,
             multiaddrs_json,
             relay_addrs_json,
@@ -241,44 +287,115 @@ pub fn upsert_presence(
     Ok(())
 }
 
-pub fn get_presence(
+/// This account's devices with still-live presence, for fan-out. A device
+/// that hasn't heartbeated recently simply isn't in the list.
+pub fn get_presence_all(
     conn: &Connection,
     user_id: &str,
     now: i64,
-) -> Result<Option<PresenceRecord>, AppError> {
-    let row = conn
-        .query_row(
-            "SELECT peer_id, multiaddrs, relay_addrs, share_online_status, expires_at FROM presence
-             WHERE user_id = ?1 AND expires_at > ?2",
-            params![user_id, now],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, bool>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
+) -> Result<Vec<PresenceRecord>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT device_id, peer_id, multiaddrs, relay_addrs, share_online_status, expires_at FROM presence
+         WHERE user_id = ?1 AND expires_at > ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![user_id, now], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, bool>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    rows.into_iter()
+        .map(
+            |(
+                device_id,
+                peer_id,
+                multiaddrs_json,
+                relay_addrs_json,
+                share_online_status,
+                expires_at,
+            )| {
+                let multiaddrs: Vec<String> =
+                    serde_json::from_str(&multiaddrs_json).map_err(anyhow::Error::new)?;
+                let relay_addrs: Vec<String> =
+                    serde_json::from_str(&relay_addrs_json).map_err(anyhow::Error::new)?;
+                Ok(PresenceRecord {
+                    user_id: user_id.to_string(),
+                    device_id,
+                    peer_id,
+                    multiaddrs,
+                    relay_addrs,
+                    expires_at,
+                    share_online_status,
+                })
             },
         )
-        .optional()?;
+        .collect()
+}
 
-    let Some((peer_id, multiaddrs_json, relay_addrs_json, share_online_status, expires_at)) = row
-    else {
-        return Ok(None);
-    };
-    let multiaddrs: Vec<String> =
-        serde_json::from_str(&multiaddrs_json).map_err(anyhow::Error::new)?;
-    let relay_addrs: Vec<String> =
-        serde_json::from_str(&relay_addrs_json).map_err(anyhow::Error::new)?;
-    Ok(Some(PresenceRecord {
-        user_id: user_id.to_string(),
-        peer_id,
-        multiaddrs,
-        relay_addrs,
-        expires_at,
-        share_online_status,
-    }))
+// ---- devices ----------------------------------------------------------------
+
+/// Stores a device certificate row; the route handler already verified
+/// both signatures. Upsert, so a re-registering device after a purge
+/// doesn't 409.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_device(
+    conn: &Connection,
+    user_id: &str,
+    device_id: &str,
+    device_ed25519_key: &str,
+    device_curve25519_key: &str,
+    master_ed25519_key: &str,
+    cert_signature: &str,
+    now: i64,
+) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO devices (user_id, device_id, device_ed25519_key, device_curve25519_key, master_ed25519_key, cert_signature, added_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(user_id, device_id) DO UPDATE SET
+            device_ed25519_key = excluded.device_ed25519_key,
+            device_curve25519_key = excluded.device_curve25519_key,
+            master_ed25519_key = excluded.master_ed25519_key,
+            cert_signature = excluded.cert_signature",
+        params![
+            user_id,
+            device_id,
+            device_ed25519_key,
+            device_curve25519_key,
+            master_ed25519_key,
+            cert_signature,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_devices(
+    conn: &Connection,
+    user_id: &str,
+) -> Result<Vec<wire_proto::DeviceCertificate>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT device_id, device_ed25519_key, device_curve25519_key, master_ed25519_key, cert_signature
+         FROM devices WHERE user_id = ?1 ORDER BY added_at ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![user_id], |row| {
+            Ok(wire_proto::DeviceCertificate {
+                device_id: row.get(0)?,
+                device_ed25519_key: row.get(1)?,
+                device_curve25519_key: row.get(2)?,
+                master_ed25519_key: row.get(3)?,
+                signature: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 // ---- groups -----------------------------------------------------------------
@@ -430,13 +547,9 @@ fn list_members(conn: &Connection, group_id: &str) -> Result<Vec<GroupMember>, A
         .collect())
 }
 
-/// The group_ids a user belongs to, with no other detail — just enough
-/// for a client to notice "I'm apparently in a group I don't have
-/// locally" and go fetch/request the rest. See the doc comment on the
-/// `/v1/users/{user_id}/groups` route for why this exists: without it, a
-/// client that missed the one-shot P2P message that normally delivers
-/// membership (offline, a dropped dial, anything) had no way to ever find
-/// out, since group_ids aren't otherwise discoverable.
+/// The group_ids a user belongs to, no other detail — lets a client that
+/// missed the one-shot P2P membership message notice and go fetch the
+/// rest (see the `/v1/users/{user_id}/groups` route).
 pub fn groups_for_user(conn: &Connection, user_id: &str) -> Result<Vec<String>, AppError> {
     let mut stmt = conn.prepare("SELECT group_id FROM group_members WHERE user_id = ?1")?;
     let rows = stmt

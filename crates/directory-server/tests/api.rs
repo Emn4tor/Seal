@@ -12,9 +12,10 @@ use rand::rngs::OsRng;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use wire_proto::{
-    ChannelKind, ChannelRecord, ClaimedOtk, CreateChannelRequest, CreateGroupRequest, GroupRecord,
-    OneTimeKeyEntry, PresenceRecord, PresenceUpdateRequest, RegisterUserRequest,
-    RosterUpdateRequest, UploadOtkRequest, UserRecord,
+    ChannelKind, ChannelRecord, ClaimedOtk, CreateChannelRequest, CreateGroupRequest,
+    DeviceCertificate, GroupRecord, OneTimeKeyEntry, PresenceListResponse, PresenceRecord,
+    PresenceUpdateRequest, RegisterDeviceRequest, RegisterUserRequest, RosterUpdateRequest,
+    UploadOtkRequest, UserRecord,
 };
 
 fn now() -> i64 {
@@ -182,6 +183,7 @@ async fn otk_upload_then_claim_one_time_then_fallback() {
 
     let mut upload = UploadOtkRequest {
         user_id: user_id.clone(),
+        device_id: "device-1".into(),
         keys: vec![OneTimeKeyEntry {
             key_id: "otk-1".into(),
             public_key: b64(&[1u8; 32]),
@@ -209,7 +211,7 @@ async fn otk_upload_then_claim_one_time_then_fallback() {
     let (status, body) = call(
         &router,
         "GET",
-        &format!("/v1/users/{user_id}/otk/claim"),
+        &format!("/v1/users/{user_id}/otk/claim/device-1"),
         None,
     )
     .await;
@@ -222,7 +224,7 @@ async fn otk_upload_then_claim_one_time_then_fallback() {
     let (status, body) = call(
         &router,
         "GET",
-        &format!("/v1/users/{user_id}/otk/claim"),
+        &format!("/v1/users/{user_id}/otk/claim/device-1"),
         None,
     )
     .await;
@@ -235,13 +237,195 @@ async fn otk_upload_then_claim_one_time_then_fallback() {
     let (status, body) = call(
         &router,
         "GET",
-        &format!("/v1/users/{user_id}/otk/claim"),
+        &format!("/v1/users/{user_id}/otk/claim/device-1"),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     let claimed: ClaimedOtk = serde_json::from_value(body).unwrap();
     assert_eq!(claimed.key_id, "fallback-1");
+}
+
+/// The bug multi-device presence/OTKs exist to prevent: two devices sharing
+/// one account must not clobber each other's presence row or be able to
+/// claim OTKs from a pool that isn't theirs.
+#[tokio::test]
+async fn two_devices_have_independent_presence_and_otk_pools() {
+    let (state, _dir) = test_state().await;
+    let router = build_public_router(state);
+    let (signing_key, user_id) = new_identity();
+    register(&router, &signing_key, &user_id, "alice").await;
+
+    for (device_id, addr) in [
+        ("desktop", "/ip4/10.0.0.1/udp/4001/quic-v1"),
+        ("phone", "/ip4/10.0.0.2/udp/4001/quic-v1"),
+    ] {
+        let mut req = PresenceUpdateRequest {
+            user_id: user_id.clone(),
+            device_id: device_id.into(),
+            peer_id: format!("peer-{device_id}"),
+            multiaddrs: vec![addr.into()],
+            relay_addrs: vec![],
+            ttl_secs: 60,
+            share_online_status: true,
+            timestamp: now(),
+            nonce: nonce(),
+            signature: String::new(),
+        };
+        req.signature = b64(&signing_key.sign(&req.signing_bytes()).to_bytes());
+        let (status, _) = call(
+            &router,
+            "PUT",
+            &format!("/v1/presence/{user_id}/{device_id}"),
+            Some(json!(req)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let (status, body) = call(&router, "GET", &format!("/v1/presence/{user_id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: PresenceListResponse = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        listed.devices.len(),
+        2,
+        "both devices' presence rows must survive, neither should clobber the other"
+    );
+    let peer_ids: std::collections::HashSet<_> =
+        listed.devices.iter().map(|d| d.peer_id.clone()).collect();
+    assert_eq!(
+        peer_ids,
+        std::collections::HashSet::from(["peer-desktop".to_string(), "peer-phone".to_string()])
+    );
+
+    // Each device uploads its own OTK batch; claiming one device's OTK must
+    // never hand back a key from the other device's pool.
+    for (device_id, key_id) in [("desktop", "desktop-otk"), ("phone", "phone-otk")] {
+        let mut upload = UploadOtkRequest {
+            user_id: user_id.clone(),
+            device_id: device_id.into(),
+            keys: vec![OneTimeKeyEntry {
+                key_id: key_id.into(),
+                public_key: b64(&[9u8; 32]),
+            }],
+            fallback_key: None,
+            timestamp: now(),
+            nonce: nonce(),
+            signature: String::new(),
+        };
+        upload.signature = b64(&signing_key.sign(&upload.signing_bytes()).to_bytes());
+        let (status, _) = call(
+            &router,
+            "POST",
+            &format!("/v1/users/{user_id}/otk"),
+            Some(json!(upload)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    let (status, body) = call(
+        &router,
+        "GET",
+        &format!("/v1/users/{user_id}/otk/claim/phone"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let claimed: ClaimedOtk = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        claimed.key_id, "phone-otk",
+        "claiming the phone's device_id must never return the desktop's key"
+    );
+}
+
+/// A device certificate must be linked by the account's actual master key —
+/// a signature from an unrelated key, even a validly-formed one, must be
+/// rejected rather than silently accepted onto someone else's account.
+#[tokio::test]
+async fn device_registration_rejects_a_cert_not_signed_by_the_account_master_key() {
+    let (state, _dir) = test_state().await;
+    let router = build_public_router(state);
+    let (signing_key, user_id) = new_identity();
+    register(&router, &signing_key, &user_id, "alice").await;
+
+    let (attacker_key, _attacker_id) = new_identity();
+    let mut cert = DeviceCertificate {
+        device_id: "phone".into(),
+        device_ed25519_key: b64(&[3u8; 32]),
+        device_curve25519_key: b64(&[4u8; 32]),
+        master_ed25519_key: b64(signing_key.verifying_key().as_bytes()),
+        signature: String::new(),
+    };
+    // Signed by the wrong key.
+    cert.signature = b64(&attacker_key.sign(&cert.signing_bytes()).to_bytes());
+
+    let mut req = RegisterDeviceRequest {
+        user_id: user_id.clone(),
+        cert,
+        timestamp: now(),
+        nonce: nonce(),
+        signature: String::new(),
+    };
+    // Outer envelope is validly signed by the real master key ...
+    req.signature = b64(&signing_key.sign(&req.signing_bytes()).to_bytes());
+
+    let (status, _) = call(
+        &router,
+        "POST",
+        &format!("/v1/users/{user_id}/devices"),
+        Some(json!(req)),
+    )
+    .await;
+    // ... but the nested cert signature doesn't check out, so the whole
+    // request must still be rejected.
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn device_registration_and_listing_round_trips() {
+    let (state, _dir) = test_state().await;
+    let router = build_public_router(state);
+    let (signing_key, user_id) = new_identity();
+    register(&router, &signing_key, &user_id, "alice").await;
+
+    let mut cert = DeviceCertificate {
+        device_id: "phone".into(),
+        device_ed25519_key: b64(&[3u8; 32]),
+        device_curve25519_key: b64(&[4u8; 32]),
+        master_ed25519_key: b64(signing_key.verifying_key().as_bytes()),
+        signature: String::new(),
+    };
+    cert.signature = b64(&signing_key.sign(&cert.signing_bytes()).to_bytes());
+
+    let mut req = RegisterDeviceRequest {
+        user_id: user_id.clone(),
+        cert: cert.clone(),
+        timestamp: now(),
+        nonce: nonce(),
+        signature: String::new(),
+    };
+    req.signature = b64(&signing_key.sign(&req.signing_bytes()).to_bytes());
+
+    let (status, _) = call(
+        &router,
+        "POST",
+        &format!("/v1/users/{user_id}/devices"),
+        Some(json!(req)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(
+        &router,
+        "GET",
+        &format!("/v1/users/{user_id}/devices"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: wire_proto::DeviceListResponse = serde_json::from_value(body).unwrap();
+    assert_eq!(listed.devices, vec![cert]);
 }
 
 #[tokio::test]
@@ -253,6 +437,7 @@ async fn presence_put_and_get_respects_ttl_cap() {
 
     let mut req = PresenceUpdateRequest {
         user_id: user_id.clone(),
+        device_id: "device-1".into(),
         peer_id: "12D3KooWabc".into(),
         multiaddrs: vec!["/ip4/127.0.0.1/udp/4001/quic-v1".into()],
         relay_addrs: vec![],
@@ -268,7 +453,7 @@ async fn presence_put_and_get_respects_ttl_cap() {
     let (status, body) = call(
         &router,
         "PUT",
-        &format!("/v1/presence/{user_id}"),
+        &format!("/v1/presence/{user_id}/device-1"),
         Some(json!(req)),
     )
     .await;
@@ -281,8 +466,9 @@ async fn presence_put_and_get_respects_ttl_cap() {
 
     let (status, body) = call(&router, "GET", &format!("/v1/presence/{user_id}"), None).await;
     assert_eq!(status, StatusCode::OK);
-    let fetched: PresenceRecord = serde_json::from_value(body).unwrap();
-    assert_eq!(fetched.peer_id, "12D3KooWabc");
+    let fetched: PresenceListResponse = serde_json::from_value(body).unwrap();
+    assert_eq!(fetched.devices.len(), 1);
+    assert_eq!(fetched.devices[0].peer_id, "12D3KooWabc");
 }
 
 /// One identity flooding signed writes gets cut off rather than accepted
@@ -299,6 +485,7 @@ async fn one_identity_flooding_presence_updates_gets_rate_limited() {
     for _ in 0..(directory_server::db::MAX_REQUESTS_PER_WINDOW + 5) {
         let mut req = PresenceUpdateRequest {
             user_id: user_id.clone(),
+            device_id: "device-1".into(),
             peer_id: "12D3KooWabc".into(),
             multiaddrs: vec![],
             relay_addrs: vec![],
@@ -312,7 +499,7 @@ async fn one_identity_flooding_presence_updates_gets_rate_limited() {
         let (status, _) = call(
             &router,
             "PUT",
-            &format!("/v1/presence/{user_id}"),
+            &format!("/v1/presence/{user_id}/device-1"),
             Some(json!(req)),
         )
         .await;
@@ -502,11 +689,8 @@ async fn adding_an_unregistered_user_id_to_a_roster_is_rejected() {
     );
 }
 
-/// Exercises `/v1/users/{id}/groups` — the endpoint a client uses to
-/// discover memberships it doesn't have locally (e.g. it missed the P2P
-/// key-share that normally delivers them). Membership should show up for
-/// everyone actually on the roster, nobody else, and drop off again once
-/// someone leaves.
+/// Exercises `/v1/users/{id}/groups`. Membership should show up for
+/// everyone on the roster, nobody else, and drop off once someone leaves.
 #[tokio::test]
 async fn list_my_groups_reflects_membership() {
     let (state, _dir) = test_state().await;

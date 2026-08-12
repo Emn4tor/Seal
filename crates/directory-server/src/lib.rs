@@ -22,12 +22,20 @@ pub fn build_public_router(state: AppState) -> Router {
         .route("/v1/users/{user_id}", get(routes::users::get_user))
         .route("/v1/users/{user_id}/otk", post(routes::users::upload_otk))
         .route(
-            "/v1/users/{user_id}/otk/claim",
+            "/v1/users/{user_id}/otk/claim/{device_id}",
             get(routes::users::claim_otk),
         )
         .route(
+            "/v1/users/{user_id}/devices",
+            post(routes::devices::register_device).get(routes::devices::list_devices),
+        )
+        .route(
             "/v1/presence/{user_id}",
-            put(routes::presence::put_presence).get(routes::presence::get_presence),
+            get(routes::presence::get_all_presence),
+        )
+        .route(
+            "/v1/presence/{user_id}/{device_id}",
+            put(routes::presence::put_presence),
         )
         .route("/v1/relay-info", get(routes::relay::get_relay_info))
         .route("/v1/groups", post(routes::groups::create_group))

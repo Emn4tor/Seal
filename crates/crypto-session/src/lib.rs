@@ -3,7 +3,9 @@ pub mod error;
 pub mod megolm;
 pub mod olm;
 
-pub use envelope::{AttachmentPayload, DirectEnvelope, DirectPayload, GroupEnvelope, GroupPayload};
+pub use envelope::{
+    AttachmentPayload, DirectEnvelope, DirectPayload, GroupEnvelope, GroupPayload, SyncMessage,
+};
 pub use error::CryptoError;
 pub use megolm::MegolmManager;
 pub use olm::OlmManager;

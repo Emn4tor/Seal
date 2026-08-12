@@ -23,11 +23,8 @@ pub fn encode_curve25519(key: &Curve25519PublicKey) -> String {
     STANDARD.encode(key.as_bytes())
 }
 
-/// In-memory cache of active Olm sessions, one per peer, keyed by the
-/// peer's base64 Curve25519 identity key. Persisting sessions to the local
-/// encrypted store (so ratchet state survives restarts) is the caller's
-/// (`core`) responsibility — this manager only holds what's currently
-/// loaded.
+/// In-memory cache of active Olm sessions, keyed by peer Curve25519 key.
+/// Persisting to the encrypted store is the caller's (`core`) job.
 #[derive(Default)]
 pub struct OlmManager {
     sessions: HashMap<String, Session>,
@@ -66,17 +63,17 @@ impl OlmManager {
     }
 
     /// Starts a brand-new outbound session with a peer we've never messaged
-    /// before, using their identity key and a freshly claimed one-time key
-    /// (from `GET /v1/users/:id/otk/claim` on the directory server).
+    /// before. `my_device_identity` must be this device's own Olm account,
+    /// not the master identity — reusing it collides two devices onto one slot.
     pub fn start_outbound(
         &mut self,
-        my_identity: &Identity,
+        my_device_identity: &Identity,
         peer_curve25519_b64: &str,
         peer_one_time_key_b64: &str,
     ) -> Result<(), CryptoError> {
         let peer_identity_key = decode_curve25519(peer_curve25519_b64)?;
         let peer_otk = decode_curve25519(peer_one_time_key_b64)?;
-        let session = my_identity.account().create_outbound_session(
+        let session = my_device_identity.account().create_outbound_session(
             SessionConfig::version_1(),
             peer_identity_key,
             peer_otk,
@@ -86,13 +83,14 @@ impl OlmManager {
         Ok(())
     }
 
-    /// Encrypts `plaintext` for `peer_curve25519_b64` into the outer wire
-    /// envelope, ready to hand to the transport layer. Requires an existing
-    /// session (via `start_outbound`, or one implicitly created by a
-    /// previously received pre-key message).
+    /// Encrypts `plaintext` for `peer_curve25519_b64`. The three `my_*`
+    /// fields are only stamped on the envelope as routing hints (see
+    /// `DirectEnvelope`'s doc comment); encryption itself needs just the session.
     pub fn encrypt(
         &mut self,
-        my_identity: &Identity,
+        my_user_id: &str,
+        my_device_id: &str,
+        my_curve25519_key_b64: &str,
         peer_curve25519_b64: &str,
         plaintext: &[u8],
     ) -> Result<DirectEnvelope, CryptoError> {
@@ -103,19 +101,20 @@ impl OlmManager {
         let message = session.encrypt(plaintext)?;
         let (message_type, ciphertext) = message.to_parts();
         Ok(DirectEnvelope {
-            sender_user_id: my_identity.user_id(),
-            sender_curve25519_key: my_identity.curve25519_public_base64(),
+            sender_user_id: my_user_id.to_string(),
+            sender_curve25519_key: my_curve25519_key_b64.to_string(),
+            sender_device_id: my_device_id.to_string(),
             message_type: message_type as u8,
             ciphertext,
         })
     }
 
     /// Decrypts an inbound envelope, transparently establishing a new
-    /// session if this is a pre-key (session-opening) message. Returns the
-    /// decrypted plaintext.
+    /// session for a pre-key message. `my_device_identity` must be this
+    /// device's own Olm account, same reason as `start_outbound`.
     pub fn decrypt(
         &mut self,
-        my_identity: &mut Identity,
+        my_device_identity: &mut Identity,
         envelope: &DirectEnvelope,
     ) -> Result<Vec<u8>, CryptoError> {
         let peer_key = envelope.sender_curve25519_key.clone();
@@ -132,7 +131,7 @@ impl OlmManager {
             return Err(CryptoError::NotAPreKeyMessage);
         };
         let peer_identity_key = decode_curve25519(&peer_key)?;
-        let result = my_identity.account_mut().create_inbound_session(
+        let result = my_device_identity.account_mut().create_inbound_session(
             SessionConfig::version_1(),
             peer_identity_key,
             pre_key_message,

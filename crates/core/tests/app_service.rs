@@ -4,10 +4,8 @@ use directory_server::{AppState, build_public_router};
 use p2p_core::{AppService, AttachmentPayload, ChatEvent};
 use serial_test::serial;
 
-/// Spawns a real directory-server on loopback and returns its base URL. The
-/// backing temp dir is intentionally leaked for the process's lifetime —
-/// fine in a short-lived test process, and avoids plumbing a guard through
-/// every caller.
+/// Spawns a real directory-server on loopback, returns its base URL. Temp
+/// dir is leaked for the test process's lifetime.
 async fn spawn_directory_server() -> String {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("directory.sqlite3");
@@ -22,24 +20,9 @@ async fn spawn_directory_server() -> String {
     format!("http://{addr}")
 }
 
-/// This is the fullest-stack test in the project: two `AppService`s (the
-/// exact type a Tauri command layer wraps) register with a real directory
-/// server, discover each other purely by user_id, exchange an encrypted
-/// DM, and run a group invite + group message, all persisted locally.
-///
-/// `#[serial]`, along with every other test here that creates a real
-/// `AppService`: each resolves its OS-keychain KEK, and libtest runs test
-/// functions concurrently by default, which on Windows was enough to
-/// occasionally corrupt a concurrently-accessed identity blob (a
-/// Credential Manager race, not a logic bug — see `storage::crypto`'s own
-/// unit tests). Serializing these tests relative to each other removes
-/// that race.
-///
-/// Also ignored on Linux, along with every other test here: `Keychain`
-/// needs a real D-Bus Secret Service, which headless CI doesn't have, and
-/// `gnome-keyring-daemon` proved too unreliable to depend on. Same
-/// disclosed-gap treatment as this project's real-audio-hardware tests;
-/// real coverage still runs on macOS/Windows.
+/// Fullest-stack test: two `AppService`s register with a real directory
+/// server, discover each other, exchange a DM, and run a group invite +
+/// message. Ignored on Linux: needs a real D-Bus Secret Service.
 #[tokio::test]
 #[serial]
 #[cfg_attr(
@@ -86,7 +69,7 @@ async fn full_app_service_flow_dm_then_group() {
             tokio::select! {
                 _ = alice.next_event() => {}
                 event = bob.next_event() => {
-                    if let ChatEvent::DirectMessage { from, body, attachment } = event {
+                    if let ChatEvent::DirectMessage { from, body, attachment, .. } = event {
                         assert_eq!(from, alice_id);
                         assert_eq!(body, "hello bob");
                         assert_eq!(

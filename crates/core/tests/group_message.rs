@@ -3,14 +3,24 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use identity::Identity;
-use p2p_core::{AttachmentPayload, ChatEvent, ChatNode};
+use p2p_core::{AttachmentPayload, ChatEvent, ChatNode, DeviceContact};
 
-/// 3-node group round trip over the real libp2p transport: the group owner
-/// creates a Megolm outbound session, shares it 1:1-Olm-encrypted with two
-/// members, then publishes a group message over gossipsub that both members
-/// decrypt. This is the "no chat control, no server-side trace" path in
-/// full: the key share never touches any server, and the group message body
-/// is only ever seen by the sender and by peers holding the shared key.
+fn single_device(
+    device_id: &str,
+    curve25519_key: String,
+    peer_id: libp2p::PeerId,
+) -> Vec<DeviceContact> {
+    vec![DeviceContact {
+        device_id: device_id.to_string(),
+        curve25519_key,
+        peer_id,
+        addrs: vec![],
+    }]
+}
+
+/// 3-node group round trip: owner creates a Megolm session, shares it
+/// Olm-encrypted with two members, publishes over gossipsub, both decrypt.
+/// Neither the key share nor the message body ever touches a server.
 #[tokio::test]
 async fn three_node_group_round_trip_including_key_share() {
     let mut owner = ChatNode::new(Identity::generate()).expect("build owner");
@@ -21,9 +31,11 @@ async fn three_node_group_round_trip_including_key_share() {
     let b_id = member_b.identity.user_id();
     let c_id = member_c.identity.user_id();
 
-    let owner_curve = owner.identity.curve25519_public_base64();
-    let b_curve = member_b.identity.curve25519_public_base64();
-    let c_curve = member_c.identity.curve25519_public_base64();
+    // The curve key in a `DeviceContact` must be the *device* identity's,
+    // not the master `identity`'s — see `ChatNode::device_identity`.
+    let owner_curve = owner.device_identity.curve25519_public_base64();
+    let b_curve = member_b.device_identity.curve25519_public_base64();
+    let c_curve = member_c.device_identity.curve25519_public_base64();
 
     let owner_peer = owner.local_peer_id();
     let b_peer = member_b.local_peer_id();
@@ -31,10 +43,14 @@ async fn three_node_group_round_trip_including_key_share() {
 
     // One-time keys B and C would have published to the directory server,
     // needed for the owner to establish 1:1 Olm sessions to key-share with
-    // them.
-    member_b.identity.account_mut().generate_one_time_keys(1);
+    // them — from their *device* identity's account, since that's what an
+    // inbound pre-key message actually gets matched against.
+    member_b
+        .device_identity
+        .account_mut()
+        .generate_one_time_keys(1);
     let b_otk = *member_b
-        .identity
+        .device_identity
         .account()
         .one_time_keys()
         .values()
@@ -42,9 +58,12 @@ async fn three_node_group_round_trip_including_key_share() {
         .unwrap();
     let b_otk_b64 = STANDARD.encode(b_otk.as_bytes());
 
-    member_c.identity.account_mut().generate_one_time_keys(1);
+    member_c
+        .device_identity
+        .account_mut()
+        .generate_one_time_keys(1);
     let c_otk = *member_c
-        .identity
+        .device_identity
         .account()
         .one_time_keys()
         .values()
@@ -54,12 +73,18 @@ async fn three_node_group_round_trip_including_key_share() {
 
     // Full triangle of contacts/connections so gossipsub has every edge
     // available for mesh formation with such a small peer set.
-    owner.add_contact(&b_id, &b_curve, b_peer, vec![]);
-    owner.add_contact(&c_id, &c_curve, c_peer, vec![]);
-    member_b.add_contact(&owner_id, &owner_curve, owner_peer, vec![]);
-    member_b.add_contact(&c_id, &c_curve, c_peer, vec![]);
-    member_c.add_contact(&owner_id, &owner_curve, owner_peer, vec![]);
-    member_c.add_contact(&b_id, &b_curve, b_peer, vec![]);
+    owner.add_contact(&b_id, single_device("b-device-1", b_curve.clone(), b_peer));
+    owner.add_contact(&c_id, single_device("c-device-1", c_curve.clone(), c_peer));
+    member_b.add_contact(
+        &owner_id,
+        single_device("owner-device-1", owner_curve.clone(), owner_peer),
+    );
+    member_b.add_contact(&c_id, single_device("c-device-1", c_curve.clone(), c_peer));
+    member_c.add_contact(
+        &owner_id,
+        single_device("owner-device-1", owner_curve.clone(), owner_peer),
+    );
+    member_c.add_contact(&b_id, single_device("b-device-1", b_curve.clone(), b_peer));
 
     owner
         .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -76,10 +101,10 @@ async fn three_node_group_round_trip_including_key_share() {
     member_c.dial(b_addr).expect("c dials b");
 
     owner
-        .ensure_outbound_session(&b_id, &b_otk_b64)
+        .ensure_outbound_session(&b_id, "b-device-1", &b_otk_b64)
         .expect("owner establishes olm session with b");
     owner
-        .ensure_outbound_session(&c_id, &c_otk_b64)
+        .ensure_outbound_session(&c_id, "c-device-1", &c_otk_b64)
         .expect("owner establishes olm session with c");
 
     const GROUP_ID: &str = "group-1";
@@ -162,7 +187,13 @@ async fn three_node_group_round_trip_including_key_share() {
                     data: b"pretend-image-bytes".to_vec(),
                 };
                 owner
-                    .send_group_message(GROUP_ID, CHANNEL_ID, "hello group", Some(attachment))
+                    .send_group_message(
+                        GROUP_ID,
+                        CHANNEL_ID,
+                        "test-message-id",
+                        "hello group",
+                        Some(attachment),
+                    )
                     .expect("owner sends group message");
             }
         }
@@ -177,12 +208,9 @@ async fn three_node_group_round_trip_including_key_share() {
     );
 }
 
-/// A channel-creation announcement (`GroupPayload::ChannelsChanged`, sent by
-/// `ChatNode::send_channels_changed`) reaches a fellow member over the same
-/// gossipsub topic as a chat message. This is the real-time half of fixing
-/// "member B never sees a channel member A created" — the other half
-/// (`AppService::refresh_group`, which actually re-fetches the channel list
-/// from the directory server once this arrives) lives above `ChatNode` and
+/// A channel-creation announcement reaches a fellow member over the same
+/// gossipsub topic as a chat message. `AppService::refresh_group`, which
+/// re-fetches the channel list on arrival, lives above `ChatNode` and
 /// isn't reachable from this crate's tests.
 #[tokio::test]
 async fn channels_changed_announcement_reaches_a_fellow_member() {
@@ -191,14 +219,17 @@ async fn channels_changed_announcement_reaches_a_fellow_member() {
 
     let owner_id = owner.identity.user_id();
     let member_id = member.identity.user_id();
-    let owner_curve = owner.identity.curve25519_public_base64();
-    let member_curve = member.identity.curve25519_public_base64();
+    let owner_curve = owner.device_identity.curve25519_public_base64();
+    let member_curve = member.device_identity.curve25519_public_base64();
     let owner_peer = owner.local_peer_id();
     let member_peer = member.local_peer_id();
 
-    member.identity.account_mut().generate_one_time_keys(1);
+    member
+        .device_identity
+        .account_mut()
+        .generate_one_time_keys(1);
     let member_otk = *member
-        .identity
+        .device_identity
         .account()
         .one_time_keys()
         .values()
@@ -206,8 +237,14 @@ async fn channels_changed_announcement_reaches_a_fellow_member() {
         .unwrap();
     let member_otk_b64 = STANDARD.encode(member_otk.as_bytes());
 
-    owner.add_contact(&member_id, &member_curve, member_peer, vec![]);
-    member.add_contact(&owner_id, &owner_curve, owner_peer, vec![]);
+    owner.add_contact(
+        &member_id,
+        single_device("member-device-1", member_curve.clone(), member_peer),
+    );
+    member.add_contact(
+        &owner_id,
+        single_device("owner-device-1", owner_curve.clone(), owner_peer),
+    );
 
     owner
         .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -216,7 +253,7 @@ async fn channels_changed_announcement_reaches_a_fellow_member() {
     member.dial(owner_addr).expect("member dials owner");
 
     owner
-        .ensure_outbound_session(&member_id, &member_otk_b64)
+        .ensure_outbound_session(&member_id, "member-device-1", &member_otk_b64)
         .expect("owner establishes olm session with member");
 
     const GROUP_ID: &str = "group-channels-changed";

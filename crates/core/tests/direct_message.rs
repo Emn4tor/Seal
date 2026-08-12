@@ -3,13 +3,11 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use identity::Identity;
-use p2p_core::{AttachmentPayload, ChatEvent, ChatNode};
+use p2p_core::{AttachmentPayload, ChatEvent, ChatNode, DeviceContact};
 
-/// Full 1:1 round trip over the real libp2p transport: Alice establishes an
-/// Olm session using a one-time key Bob published, sends an encrypted
-/// message, Bob decrypts and replies, and Alice decrypts the reply using
-/// the now bidirectionally-established session. No shortcuts — real
-/// transport, real Olm crypto, both directions.
+/// Full 1:1 round trip over real libp2p transport and Olm crypto: Alice
+/// sends via a one-time key Bob published, Bob decrypts and replies,
+/// Alice decrypts the reply.
 #[tokio::test]
 async fn full_1to1_round_trip_over_real_transport() {
     let mut alice = ChatNode::new(Identity::generate()).expect("build alice");
@@ -17,15 +15,19 @@ async fn full_1to1_round_trip_over_real_transport() {
 
     let alice_user_id = alice.identity.user_id();
     let bob_user_id = bob.identity.user_id();
-    let alice_curve = alice.identity.curve25519_public_base64();
-    let bob_curve = bob.identity.curve25519_public_base64();
+    // The curve key in a `DeviceContact` must be the *device* identity's,
+    // not the master `identity`'s — see `ChatNode::device_identity`.
+    let alice_curve = alice.device_identity.curve25519_public_base64();
+    let bob_curve = bob.device_identity.curve25519_public_base64();
     let alice_peer_id = alice.local_peer_id();
     let bob_peer_id = bob.local_peer_id();
 
-    // Bob publishes a one-time key, as he would to the directory server.
-    bob.identity.account_mut().generate_one_time_keys(1);
+    // Bob publishes a one-time key, as he would to the directory server —
+    // from his *device* identity's account, since that's what an inbound
+    // pre-key message actually gets matched against.
+    bob.device_identity.account_mut().generate_one_time_keys(1);
     let bob_otk = *bob
-        .identity
+        .device_identity
         .account()
         .one_time_keys()
         .values()
@@ -33,8 +35,24 @@ async fn full_1to1_round_trip_over_real_transport() {
         .unwrap();
     let bob_otk_b64 = STANDARD.encode(bob_otk.as_bytes());
 
-    alice.add_contact(&bob_user_id, &bob_curve, bob_peer_id, vec![]);
-    bob.add_contact(&alice_user_id, &alice_curve, alice_peer_id, vec![]);
+    alice.add_contact(
+        &bob_user_id,
+        vec![DeviceContact {
+            device_id: "bob-device-1".to_string(),
+            curve25519_key: bob_curve,
+            peer_id: bob_peer_id,
+            addrs: vec![],
+        }],
+    );
+    bob.add_contact(
+        &alice_user_id,
+        vec![DeviceContact {
+            device_id: "alice-device-1".to_string(),
+            curve25519_key: alice_curve,
+            peer_id: alice_peer_id,
+            addrs: vec![],
+        }],
+    );
 
     alice
         .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -43,7 +61,7 @@ async fn full_1to1_round_trip_over_real_transport() {
     bob.dial(alice_addr).expect("bob dials alice");
 
     alice
-        .ensure_outbound_session(&bob_user_id, &bob_otk_b64)
+        .ensure_outbound_session(&bob_user_id, "bob-device-1", &bob_otk_b64)
         .expect("alice establishes outbound olm session");
 
     // Alice's first message also carries a small attachment — this is the
@@ -73,7 +91,7 @@ async fn full_1to1_round_trip_over_real_transport() {
                 event = alice.next_event() => {
                     match event {
                         ChatEvent::Connected(_) => alice_connected = true,
-                        ChatEvent::DirectMessage { from, body, attachment } => {
+                        ChatEvent::DirectMessage { from, body, attachment, .. } => {
                             assert_eq!(from, bob_user_id);
                             assert_eq!(body, "hi alice");
                             assert!(attachment.is_none());
@@ -85,7 +103,7 @@ async fn full_1to1_round_trip_over_real_transport() {
                 event = bob.next_event() => {
                     match event {
                         ChatEvent::Connected(_) => bob_connected = true,
-                        ChatEvent::DirectMessage { from, body, attachment } => {
+                        ChatEvent::DirectMessage { from, body, attachment, .. } => {
                             assert_eq!(from, alice_user_id);
                             assert_eq!(body, "hello bob");
                             let attachment = attachment.expect("alice's message had an attachment");
@@ -94,7 +112,7 @@ async fn full_1to1_round_trip_over_real_transport() {
                             assert!(!attachment.exif_stripped);
                             assert_eq!(attachment.data, b"not a real file, just some bytes");
                             bob_got_message = true;
-                            bob.send_direct_message(&alice_user_id, "hi alice", None)
+                            bob.send_direct_message(&alice_user_id, "reply-message-id", "hi alice", None)
                                 .expect("bob replies");
                         }
                         _ => {}
@@ -105,7 +123,12 @@ async fn full_1to1_round_trip_over_real_transport() {
             if alice_connected && bob_connected && !sent_initial_message {
                 sent_initial_message = true;
                 alice
-                    .send_direct_message(&bob_user_id, "hello bob", Some(attachment.clone()))
+                    .send_direct_message(
+                        &bob_user_id,
+                        "initial-message-id",
+                        "hello bob",
+                        Some(attachment.clone()),
+                    )
                     .expect("alice sends first message");
             }
         }

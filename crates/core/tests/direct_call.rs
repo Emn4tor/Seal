@@ -3,9 +3,8 @@ use std::time::Duration;
 use directory_server::{AppState, build_public_router};
 use p2p_core::{AppService, ChatEvent};
 
-/// Spawns a real directory-server on loopback and returns its base URL. Same
-/// helper as `app_service.rs`/`voice_presence.rs` — the backing temp dir is
-/// intentionally leaked for the test process's lifetime.
+/// Spawns a real directory-server on loopback, returns its base URL. Same
+/// helper as `app_service.rs`; temp dir leaked for the test process.
 async fn spawn_directory_server() -> String {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("directory.sqlite3");
@@ -20,17 +19,9 @@ async fn spawn_directory_server() -> String {
     format!("http://{addr}")
 }
 
-/// The 1:1-call counterpart to `voice_presence.rs`'s group-voice test: two
-/// real `AppService`s, alice rings bob (nobody's messaged the other before —
-/// exercises the same unknown-caller self-heal `DirectMessage` gets), bob
-/// accepts, and both sides must end up with an active `Direct`-scoped voice
-/// call to each other, discovered purely through the `CallInvite`/
-/// `CallAccept` signaling (no group, no gossipsub topic involved at all).
-// Ignored for the same reason as `voice.rs`/`voice_presence.rs`: starting
-// the actual call opens the real default mic/speaker as a side effect of
-// exercising the signaling logic this test cares about (audio I/O degrades
-// gracefully with no device/permission). Run explicitly with
-// `cargo test -- --ignored`.
+/// 1:1-call counterpart to `voice_presence.rs`'s group test: alice rings
+/// bob, bob accepts, both end up with an active `Direct`-scoped call.
+// Opens the real default mic/speaker; run with `cargo test -- --ignored`.
 #[tokio::test]
 #[ignore = "opens the real default mic/speaker; run explicitly with `cargo test -- --ignored`"]
 async fn ringing_then_accepting_connects_a_direct_call() {
@@ -105,7 +96,7 @@ async fn ringing_then_accepting_connects_a_direct_call() {
             }
             tokio::select! {
                 event = alice.next_event() => {
-                    if let ChatEvent::CallAccepted { from, call_id: id } = event {
+                    if let ChatEvent::CallAccepted { from, call_id: id, .. } = event {
                         assert_eq!(from, bob_id);
                         assert_eq!(id, call_id);
                         alice_saw_accept = true;

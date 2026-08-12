@@ -1,15 +1,33 @@
-use crypto_session::AttachmentPayload;
+use crypto_session::{AttachmentPayload, SyncMessage};
 use libp2p::PeerId;
 
 #[derive(Debug, Clone)]
 pub enum ChatEvent {
     Connected(PeerId),
+    /// Inviting/desktop side of a QR pairing ceremony: a device presented
+    /// a valid token. `AppService::next_event` answers it directly and
+    /// never returns it, so it has no frontend-facing shape.
+    PairingRequested {
+        response_id: u64,
+        device_id: String,
+        device_ed25519_key: String,
+        device_curve25519_key: String,
+    },
+    /// Joining/phone side decrypted the inviting device's response. Boxed
+    /// since `PairingPayload` is large enough that every other `ChatEvent`
+    /// variant shouldn't pay for its stack size.
+    PairingCompleted(Box<net::PairingPayload>),
+    /// The joining side's pairing attempt was rejected (expired/already-
+    /// used/mismatched token) or failed to decrypt.
+    PairingFailed(String),
     DirectMessage {
+        message_id: String,
         from: String,
         body: String,
         attachment: Option<AttachmentPayload>,
     },
     GroupMessage {
+        message_id: String,
         group_id: String,
         channel_id: String,
         from: String,
@@ -93,9 +111,11 @@ pub enum ChatEvent {
     /// The person we called picked up — the caller's cue to move from
     /// "ringing" to the active call UI. The actual voice stream connects
     /// separately (see `AppService::accept_call`); this just reports the
-    /// signaling outcome.
+    /// signaling outcome. `from_device_id` is which of their devices
+    /// answered, so their other ringing devices can be told to stop.
     CallAccepted {
         from: String,
+        from_device_id: String,
         call_id: String,
     },
     /// The person we called rejected it.
@@ -126,6 +146,20 @@ pub enum ChatEvent {
         peer_user_id: String,
         call_id: String,
         reason: String,
+    },
+    /// Another of this account's own devices asked to reconcile message
+    /// history. Internal handshake like `PairingRequested`:
+    /// `AppService::next_event` answers it directly and never returns it.
+    SyncRequested {
+        from_device_id: String,
+        since: i64,
+        messages: Vec<SyncMessage>,
+    },
+    /// The reply to a sync request we initiated. Unlike `SyncRequested`,
+    /// this *is* surfaced to the frontend so the UI can show sync as complete.
+    SyncCompleted {
+        device_id: String,
+        messages: Vec<SyncMessage>,
     },
 }
 

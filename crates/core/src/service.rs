@@ -6,11 +6,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use crypto_session::AttachmentPayload;
+use crypto_session::{AttachmentPayload, SyncMessage};
 use identity::{Identity, Keychain};
 use libp2p::{Multiaddr, PeerId};
 use net::DirectoryClient;
-use storage::{LocalStore, StoredAttachment};
+use storage::{LocalStore, StoredAttachment, StoredContactDevice};
 use wire_proto::{ChannelKind, ChannelRecord, GroupMember, GroupRecord, OneTimeKeyEntry};
 
 use crate::events::ChatEvent;
@@ -52,11 +52,24 @@ fn to_stored_attachment(a: &AttachmentPayload) -> StoredAttachment {
     }
 }
 
-/// How many one-time keys to keep published. A simplification worth being
-/// explicit about: this always tops up with a fresh batch on startup rather
-/// than tracking exactly how many are still unclaimed: fine at this
-/// project's scale, but a long-running production deployment would want to
-/// only top up when running low (`Account::stored_one_time_key_count`).
+fn to_sync_message(m: storage::StoredMessage) -> SyncMessage {
+    SyncMessage {
+        message_id: m.message_id,
+        conversation_id: m.conversation_id,
+        sender_user_id: m.sender_user_id,
+        body: m.body,
+        attachment: m.attachment.map(|a| AttachmentPayload {
+            filename: a.filename,
+            mime_type: a.mime_type,
+            exif_stripped: a.exif_stripped,
+            data: a.data,
+        }),
+        sent_at: m.sent_at,
+    }
+}
+
+/// How many one-time keys to keep published. Always tops up on startup
+/// rather than tracking unclaimed count; fine at this project's scale.
 const ONE_TIME_KEY_BATCH: usize = 10;
 
 #[derive(Debug, Clone)]
@@ -99,16 +112,41 @@ impl From<GroupRecord> for GroupInfo {
     }
 }
 
-/// Ties identity, local encrypted storage, the directory rendezvous client,
-/// and the P2P chat node into the single service a Tauri command layer (or
-/// any other frontend) calls into. Nothing here is UI-specific.
-/// Aborts the presence-heartbeat background task when this `AppService`
-/// (and so this guard) is dropped — e.g. when an account is switched out.
-/// `AccountManager`'s own doc comment already documents the mechanism this
-/// relies on: dropping the last `ActorHandle` clone ends that account's
-/// actor task, which drops its `AppService`, which drops this. Without it,
-/// a switched-away-from account's heartbeat would just keep announcing in
-/// the background forever.
+/// Everything a QR code needs to encode for another device to find and
+/// pair with this account — returned by `start_pairing`, parsed back out
+/// of the scanned QR and passed to `join_via_pairing` on the other end.
+#[derive(Debug, Clone)]
+pub struct PairingOffer {
+    pub user_id: String,
+    pub peer_id: String,
+    pub multiaddrs: Vec<String>,
+    pub relay_addrs: Vec<String>,
+    pub token: String,
+    pub ephemeral_pubkey: [u8; 32],
+    pub expires_at: i64,
+}
+
+/// What the joining side's network exchange comes back with — everything
+/// `join_via_pairing` needs to seed a fresh data directory before
+/// `load_or_create` can resume as the paired account.
+pub struct PairingResult {
+    device_id: String,
+    device_identity: Identity,
+    payload: net::PairingPayload,
+}
+
+/// One entry of `AppService::list_my_devices` — the "Devices" settings
+/// screen's whole data model.
+#[derive(Debug, Clone)]
+pub struct DeviceInfo {
+    pub device_id: String,
+    pub is_this_device: bool,
+    pub online: bool,
+}
+
+/// Ties identity, local storage, the directory client, and the P2P chat
+/// node into the single service the Tauri command layer calls into. Aborts
+/// the presence-heartbeat task when dropped (e.g. account switch).
 struct HeartbeatGuard(tokio::task::JoinHandle<()>);
 
 impl Drop for HeartbeatGuard {
@@ -127,11 +165,8 @@ enum CallDirection {
     Incoming,
 }
 
-/// A 1:1 call that's been proposed but isn't connected yet — either we're
-/// ringing someone (`Outgoing`) or someone's ringing us and we haven't
-/// decided yet (`Incoming`). Distinct from `voice_call`, which only exists
-/// once audio is actually flowing; a call passes through here first for
-/// both directions.
+/// A 1:1 call proposed but not yet connected, either direction. Distinct
+/// from `voice_call`, which only exists once audio is flowing.
 struct PendingCall {
     call_id: String,
     peer_user_id: String,
@@ -173,6 +208,15 @@ pub struct AppService {
     /// peer at all.
     share_online_status: Arc<AtomicBool>,
     _presence_heartbeat: HeartbeatGuard,
+    /// This device's own dialable address info as of startup — the same
+    /// values already given to presence, kept around so `start_pairing`
+    /// can put them in a QR code without re-deriving them.
+    known_addrs: Vec<String>,
+    known_relay_addrs: Vec<String>,
+    /// The contacts snapshot for whichever pairing offer is currently
+    /// outstanding — consumed the moment a matching
+    /// `ChatEvent::PairingRequested` arrives, see `next_event`.
+    pending_pairing_bootstrap: Option<net::PairingBootstrap>,
 }
 
 impl AppService {
@@ -212,7 +256,7 @@ impl AppService {
         let store = LocalStore::open(&data_dir.join("local.sqlite3"), kek)?;
 
         let stored = store.load_identity()?;
-        let (mut identity, display_name) = match stored {
+        let (identity, display_name) = match stored {
             Some(stored) => (
                 Identity::from_pickle_json(&stored.pickle_json)?,
                 stored.display_name,
@@ -231,11 +275,44 @@ impl AppService {
         // we last ran.
         directory.register(&identity, &display_name).await?;
 
-        let otk_result = identity
+        // Load this account's persisted libp2p transport keypair and
+        // device_id, or mint and save both on first run — otherwise every
+        // launch would hand out a fresh PeerId, stranding existing contacts.
+        let p2p_keypair = match store.load_p2p_keypair()? {
+            Some(bytes) => libp2p::identity::Keypair::from_protobuf_encoding(&bytes)
+                .map_err(|e| anyhow::anyhow!("stored libp2p keypair is corrupt: {e}"))?,
+            None => {
+                let keypair = libp2p::identity::Keypair::generate_ed25519();
+                store.save_p2p_keypair(&keypair.to_protobuf_encoding()?, now())?;
+                keypair
+            }
+        };
+        let device_id = match store.load_device_id()? {
+            Some(id) => id,
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                store.save_device_id(&id)?;
+                id
+            }
+        };
+        // This device's own Olm account, deliberately distinct from the
+        // account's master `identity` even on the very first device.
+        let mut device_identity = match store.load_device_olm_pickle()? {
+            Some(pickle_json) => Identity::from_pickle_json(&pickle_json)?,
+            None => {
+                let fresh = Identity::generate();
+                store.save_device_olm_pickle(&fresh.pickle_to_json()?)?;
+                fresh
+            }
+        };
+
+        // OTKs are generated for *this device's* account — the master
+        // identity never participates in Olm sessions directly.
+        let otk_result = device_identity
             .account_mut()
             .generate_one_time_keys(ONE_TIME_KEY_BATCH);
         let _ = otk_result; // discarded (evicted) keys, if any; nothing to clean up locally
-        let keys: Vec<OneTimeKeyEntry> = identity
+        let keys: Vec<OneTimeKeyEntry> = device_identity
             .account()
             .one_time_keys()
             .into_iter()
@@ -244,8 +321,8 @@ impl AppService {
                 public_key: STANDARD.encode(key.as_bytes()),
             })
             .collect();
-        identity.account_mut().generate_fallback_key();
-        let fallback = identity
+        device_identity.account_mut().generate_fallback_key();
+        let fallback = device_identity
             .account()
             .fallback_key()
             .into_iter()
@@ -254,10 +331,31 @@ impl AppService {
                 key_id: id.to_base64(),
                 public_key: STANDARD.encode(key.as_bytes()),
             });
+        // Signed/authorized by the master `identity` (directory writes are
+        // always master-authorized), but the keys themselves came from
+        // `device_identity`'s account above.
         directory
-            .upload_one_time_keys(&identity, keys, fallback)
+            .upload_one_time_keys(&identity, &device_id, keys, fallback)
             .await?;
-        identity.account_mut().mark_keys_as_published();
+        device_identity.account_mut().mark_keys_as_published();
+        store.save_device_olm_pickle(&device_identity.pickle_to_json()?)?;
+
+        // Registers this device's own certificate, signed by the master
+        // key. Idempotent, so safe to re-assert on every launch.
+        let self_device_cert = {
+            let mut cert = wire_proto::DeviceCertificate {
+                device_id: device_id.clone(),
+                device_ed25519_key: device_identity.ed25519_public_base64(),
+                device_curve25519_key: device_identity.curve25519_public_base64(),
+                master_ed25519_key: identity.ed25519_public_base64(),
+                signature: String::new(),
+            };
+            cert.signature = identity.sign(&cert.signing_bytes());
+            cert
+        };
+        directory
+            .register_device(&identity, self_device_cert)
+            .await?;
 
         let pickle_json = identity.pickle_to_json()?;
         store.save_identity(&identity.user_id(), &display_name, &pickle_json, now())?;
@@ -268,25 +366,12 @@ impl AppService {
         // candidate on a contact. Peers behind a NAT still need the
         // relay/autonat path handled further down.
 
-        // Load this account's persisted libp2p transport keypair, or mint
-        // and save one on first run — otherwise every launch would hand
-        // out a fresh PeerId and existing contacts couldn't dial us
-        // anymore. See `p2p_identity` in `storage`'s schema.sql.
-        let p2p_keypair = match store.load_p2p_keypair()? {
-            Some(bytes) => libp2p::identity::Keypair::from_protobuf_encoding(&bytes)
-                .map_err(|e| anyhow::anyhow!("stored libp2p keypair is corrupt: {e}"))?,
-            None => {
-                let keypair = libp2p::identity::Keypair::generate_ed25519();
-                store.save_p2p_keypair(&keypair.to_protobuf_encoding()?, now())?;
-                keypair
-            }
-        };
-
         // TCP only for now, not QUIC: this is the first place in the
         // workspace that would actually bind a QUIC listener (earlier
         // phases only ever listened on TCP), and it needs its own look
         // before relying on it.
-        let mut node = ChatNode::with_keypair(identity, p2p_keypair)?;
+        let mut node =
+            ChatNode::with_keypair(identity, p2p_keypair, device_id.clone(), device_identity)?;
         node.listen_on(Multiaddr::from_str("/ip4/0.0.0.0/tcp/0")?)?;
 
         // First announce at startup, immediately followed below by a
@@ -356,6 +441,7 @@ impl AppService {
         directory
             .put_presence(
                 &node.identity,
+                &device_id,
                 &peer_id_str,
                 addrs.clone(),
                 relay_addrs.clone(),
@@ -373,12 +459,19 @@ impl AppService {
         // `vodozemac::olm::Account`) can't just be shared. 150s keeps a
         // healthy margin before the 300s TTL expires.
         let heartbeat_identity = std::sync::Arc::new(Identity::from_pickle_json(&pickle_json)?);
+        let heartbeat_device_id = device_id.clone();
+        // Kept around (not just moved into the heartbeat closure below) so
+        // `start_pairing` can reuse the same dialable-address info for a
+        // pairing offer's QR code without re-deriving it.
+        let known_addrs = addrs.clone();
+        let known_relay_addrs = relay_addrs.clone();
         let heartbeat_addrs = addrs;
         let heartbeat_relay_addrs = relay_addrs;
         let heartbeat_share_online_status = share_online_status.clone();
         let heartbeat_handle = tokio::spawn(net::presence::run_presence_heartbeat_loop(
             directory_url,
             heartbeat_identity,
+            heartbeat_device_id,
             peer_id_str,
             move || heartbeat_addrs.clone(),
             move || heartbeat_relay_addrs.clone(),
@@ -405,6 +498,9 @@ impl AppService {
             voice_channel_presence: std::collections::HashMap::new(),
             share_online_status,
             _presence_heartbeat: HeartbeatGuard(heartbeat_handle),
+            known_addrs,
+            known_relay_addrs,
+            pending_pairing_bootstrap: None,
         };
         svc.discover_missing_groups().await;
         Ok(svc)
@@ -428,6 +524,168 @@ impl AppService {
         Ok(())
     }
 
+    /// Starts offering to pair a new device: mints a one-time token and
+    /// snapshots current contacts so the joining device can message them
+    /// immediately. A second call before the first is answered replaces it.
+    pub fn start_pairing(&mut self) -> anyhow::Result<PairingOffer> {
+        let contacts = self.store.list_contacts()?;
+        let mut pairing_contacts = Vec::with_capacity(contacts.len());
+        for c in contacts {
+            let devices = self
+                .store
+                .list_contact_devices(&c.user_id)?
+                .into_iter()
+                .map(|d| wire_proto::DeviceCertificate {
+                    device_id: d.device_id,
+                    device_ed25519_key: d.device_ed25519_key,
+                    device_curve25519_key: d.device_curve25519_key,
+                    master_ed25519_key: c.ed25519_key.clone(),
+                    signature: d.cert_signature,
+                })
+                .collect();
+            pairing_contacts.push(net::PairingContact {
+                user_id: c.user_id,
+                display_name: c.display_name,
+                ed25519_key: c.ed25519_key,
+                curve25519_key: c.curve25519_key,
+                verified: c.verified,
+                devices,
+            });
+        }
+        self.pending_pairing_bootstrap = Some(net::PairingBootstrap {
+            contacts: pairing_contacts,
+        });
+        let (token, ephemeral_pubkey) = self.node.start_pairing_offer();
+        Ok(PairingOffer {
+            user_id: self.user_id(),
+            peer_id: self.node.local_peer_id().to_string(),
+            multiaddrs: self.known_addrs.clone(),
+            relay_addrs: self.known_relay_addrs.clone(),
+            token,
+            ephemeral_pubkey,
+            expires_at: now() + net::PAIRING_TOKEN_TTL_SECS as i64,
+        })
+    }
+
+    /// Runs the joining side of a pairing exchange against a scanned QR
+    /// payload, using a throwaway identity. Only runs the network exchange;
+    /// `join_via_pairing` is what seeds a data directory with the result.
+    pub async fn complete_pairing(offer: &PairingOffer) -> anyhow::Result<PairingResult> {
+        let peer_id: PeerId = offer
+            .peer_id
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid peer id in pairing offer: {e}"))?;
+        let addrs: Vec<Multiaddr> = offer
+            .multiaddrs
+            .iter()
+            .chain(offer.relay_addrs.iter())
+            .filter_map(|a| a.parse().ok())
+            .collect();
+        if addrs.is_empty() {
+            anyhow::bail!("pairing offer has no dialable addresses");
+        }
+
+        let device_id = uuid::Uuid::new_v4().to_string();
+        let device_identity = Identity::generate();
+        let device_ed25519_key = device_identity.ed25519_public_base64();
+        let device_curve25519_key = device_identity.curve25519_public_base64();
+
+        let mut node = ChatNode::new(Identity::generate())?;
+        node.request_pairing(
+            peer_id,
+            addrs,
+            offer.token.clone(),
+            offer.ephemeral_pubkey,
+            device_id.clone(),
+            device_ed25519_key,
+            device_curve25519_key,
+        );
+
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(net::PAIRING_TOKEN_TTL_SECS);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                anyhow::bail!("timed out waiting for the inviting device to respond");
+            }
+            let event = tokio::time::timeout(remaining, node.next_event())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("timed out waiting for the inviting device to respond")
+                })?;
+            match event {
+                ChatEvent::PairingCompleted(payload) => {
+                    return Ok(PairingResult {
+                        device_id,
+                        device_identity,
+                        payload: *payload,
+                    });
+                }
+                ChatEvent::PairingFailed(reason) => anyhow::bail!("pairing failed: {reason}"),
+                // Transport noise (e.g. `Connected` while the dial is still
+                // settling) — irrelevant to pairing specifically, keep
+                // waiting for the actual response.
+                _ => continue,
+            }
+        }
+    }
+
+    /// `complete_pairing` plus writing its result into a fresh data
+    /// directory, then resuming through the normal `load_or_create` entrypoint.
+    pub async fn join_via_pairing(
+        data_dir: PathBuf,
+        directory_url: String,
+        offer: &PairingOffer,
+    ) -> anyhow::Result<Self> {
+        let result = Self::complete_pairing(offer).await?;
+
+        std::fs::create_dir_all(&data_dir)?;
+        let keychain = Keychain::for_app_data_dir(&data_dir)?;
+        let kek = tokio::task::spawn_blocking(move || keychain.load_or_create_kek())
+            .await
+            .expect("keychain blocking task panicked")?;
+        let store = LocalStore::open(&data_dir.join("local.sqlite3"), kek)?;
+
+        let identity = Identity::from_pickle_json(&result.payload.master_identity_pickle_json)?;
+        store.save_identity(
+            &identity.user_id(),
+            &result.payload.display_name,
+            &result.payload.master_identity_pickle_json,
+            now(),
+        )?;
+
+        // A fresh libp2p transport keypair for this device — needs *some*
+        // row to attach `device_id`/the device Olm pickle to first.
+        let p2p_keypair = libp2p::identity::Keypair::generate_ed25519();
+        store.save_p2p_keypair(&p2p_keypair.to_protobuf_encoding()?, now())?;
+        store.save_device_id(&result.device_id)?;
+        store.save_device_olm_pickle(&result.device_identity.pickle_to_json()?)?;
+
+        for contact in &result.payload.bootstrap.contacts {
+            store.upsert_contact(
+                &contact.user_id,
+                &contact.display_name,
+                &contact.ed25519_key,
+                &contact.curve25519_key,
+                now(),
+            )?;
+            let devices: Vec<StoredContactDevice> = contact
+                .devices
+                .iter()
+                .map(|d| StoredContactDevice {
+                    device_id: d.device_id.clone(),
+                    device_ed25519_key: d.device_ed25519_key.clone(),
+                    device_curve25519_key: d.device_curve25519_key.clone(),
+                    cert_signature: d.signature.clone(),
+                })
+                .collect();
+            store.replace_contact_devices(&contact.user_id, &devices, now())?;
+        }
+        drop(store);
+
+        Self::load_or_create(data_dir, directory_url, None).await
+    }
+
     pub fn user_id(&self) -> String {
         self.node.identity.user_id()
     }
@@ -438,6 +696,26 @@ impl AppService {
 
     pub fn list_contacts(&self) -> anyhow::Result<Vec<storage::StoredContact>> {
         Ok(self.store.list_contacts()?)
+    }
+
+    /// Every device registered to this account, annotated with whether
+    /// it's this device and whether it's currently reachable.
+    pub async fn list_my_devices(&mut self) -> anyhow::Result<Vec<DeviceInfo>> {
+        let my_id = self.user_id();
+        let my_device_id = self.node.device_id().to_string();
+        let device_certs = self.directory.get_devices(&my_id).await?;
+        let presences = self.directory.get_presence_all(&my_id).await?;
+        Ok(device_certs
+            .into_iter()
+            .map(|cert| {
+                let online = presences.iter().any(|p| p.device_id == cert.device_id);
+                DeviceInfo {
+                    is_this_device: cert.device_id == my_device_id,
+                    device_id: cert.device_id,
+                    online,
+                }
+            })
+            .collect())
     }
 
     /// Whether contacts can currently see this account as "online". Takes
@@ -480,11 +758,9 @@ impl AppService {
         Ok(self.store.list_messages(conversation_id)?)
     }
 
-    /// Looks a user up on the directory, caches their public identity
-    /// locally, and (if they're currently online) connects to them. Contact
-    /// metadata (name/keys) is persisted; the network connection itself is
-    /// re-established fresh every time it's needed, since a peer's address
-    /// is ephemeral session data, not identity data.
+    /// Looks a user up on the directory, caches their public identity and
+    /// verified device list locally, and connects to whichever devices are
+    /// currently reachable. The network connection is re-established fresh each time.
     pub async fn add_contact_by_user_id(&mut self, user_id: &str) -> anyhow::Result<()> {
         let user = self.directory.get_user(user_id).await?;
         self.store.upsert_contact(
@@ -495,29 +771,76 @@ impl AppService {
             now(),
         )?;
 
-        let presence = self.directory.get_presence(user_id).await?;
-        let peer_id = PeerId::from_str(&presence.peer_id)
-            .map_err(|e| anyhow::anyhow!("contact published an invalid peer id: {e}"))?;
-        // Relay candidates alongside LAN/direct ones: `send_request_with_addresses`
-        // (in `ChatNode::send_envelope`) tries every address on a contact,
-        // so handing it a `/p2p-circuit` address too costs nothing when a
-        // direct one already works, and is what makes a contact on a
-        // different network reachable at all when it doesn't.
-        let addrs: Vec<Multiaddr> = presence
-            .multiaddrs
-            .iter()
-            .chain(presence.relay_addrs.iter())
-            .filter_map(|addr| addr.parse::<Multiaddr>().ok())
-            .collect();
-        // Deliberately not also calling `node.dial(...)` here: request-response
-        // dials lazily off `Contact::addrs` when a message is actually sent
-        // (via `send_request_with_addresses`). A second, independent dial to
-        // the same peer racing that one is exactly what caused a hang here
-        // during development: simultaneous-connect tie-breaking closed one
-        // of the two connections, and the queued request never made it onto
-        // the surviving one.
-        self.node
-            .add_contact(&user.user_id, &user.curve25519_key, peer_id, addrs);
+        // Verify each cert ourselves before trusting it, not just relying
+        // on the directory server's own write-time check. A cert claiming
+        // a different master key or a bad signature is dropped.
+        let device_certs = self.directory.get_devices(user_id).await?;
+        let mut verified_devices = Vec::with_capacity(device_certs.len());
+        for cert in &device_certs {
+            if cert.master_ed25519_key != user.ed25519_key {
+                tracing::warn!(
+                    user_id,
+                    device_id = %cert.device_id,
+                    "dropping a device certificate whose master key doesn't match this account"
+                );
+                continue;
+            }
+            if let Err(e) = identity::Identity::verify(
+                &cert.master_ed25519_key,
+                &cert.signing_bytes(),
+                &cert.signature,
+            ) {
+                tracing::warn!(
+                    error = %e,
+                    user_id,
+                    device_id = %cert.device_id,
+                    "dropping a device certificate with an invalid signature"
+                );
+                continue;
+            }
+            verified_devices.push(storage::StoredContactDevice {
+                device_id: cert.device_id.clone(),
+                device_ed25519_key: cert.device_ed25519_key.clone(),
+                device_curve25519_key: cert.device_curve25519_key.clone(),
+                cert_signature: cert.signature.clone(),
+            });
+        }
+        self.store
+            .replace_contact_devices(user_id, &verified_devices, now())?;
+
+        // Only devices both verified above *and* currently announcing
+        // presence end up reachable; an offline verified device just
+        // doesn't get a `DeviceContact` entry.
+        let presences = self.directory.get_presence_all(user_id).await?;
+        let mut node_devices = Vec::with_capacity(verified_devices.len());
+        for device in &verified_devices {
+            let Some(presence) = presences.iter().find(|p| p.device_id == device.device_id) else {
+                continue;
+            };
+            let Ok(peer_id) = PeerId::from_str(&presence.peer_id) else {
+                tracing::warn!(user_id, device_id = %device.device_id, "contact's device published an invalid peer id");
+                continue;
+            };
+            // Relay candidates alongside LAN/direct ones: costs nothing when
+            // a direct address already works, and is what makes a device on
+            // a different network reachable at all when it doesn't.
+            let addrs: Vec<Multiaddr> = presence
+                .multiaddrs
+                .iter()
+                .chain(presence.relay_addrs.iter())
+                .filter_map(|addr| addr.parse::<Multiaddr>().ok())
+                .collect();
+            node_devices.push(crate::contact::DeviceContact {
+                device_id: device.device_id.clone(),
+                curve25519_key: device.device_curve25519_key.clone(),
+                peer_id,
+                addrs,
+            });
+        }
+        // Deliberately not also calling `node.dial(...)` here: a second,
+        // independent dial racing the lazy one in `send_envelope` caused a
+        // hang during development (tie-breaking closed the wrong connection).
+        self.node.add_contact(&user.user_id, node_devices);
         Ok(())
     }
 
@@ -564,13 +887,24 @@ impl AppService {
         Ok(())
     }
 
+    /// Ensures an Olm session exists with *every* currently-known device of
+    /// this contact, not just one — a send fans out to all of them, so each
+    /// needs its own session established from that device's own OTK pool.
     async fn ensure_direct_session(&mut self, peer_user_id: &str) -> anyhow::Result<()> {
-        if self.node.has_direct_session(peer_user_id) {
-            return Ok(());
+        for device in self.node.contact_devices(peer_user_id) {
+            if self
+                .node
+                .has_direct_session_with_device(peer_user_id, &device.device_id)
+            {
+                continue;
+            }
+            let otk = self
+                .directory
+                .claim_one_time_key(peer_user_id, &device.device_id)
+                .await?;
+            self.node
+                .ensure_outbound_session(peer_user_id, &device.device_id, &otk.public_key)?;
         }
-        let otk = self.directory.claim_one_time_key(peer_user_id).await?;
-        self.node
-            .ensure_outbound_session(peer_user_id, &otk.public_key)?;
         Ok(())
     }
 
@@ -583,9 +917,11 @@ impl AppService {
         check_attachment_size(attachment.as_ref())?;
         self.ensure_connected_contact(peer_user_id).await?;
         self.ensure_direct_session(peer_user_id).await?;
+        let message_id = uuid::Uuid::new_v4().to_string();
         self.node
-            .send_direct_message(peer_user_id, body, attachment.clone())?;
+            .send_direct_message(peer_user_id, &message_id, body, attachment.clone())?;
         self.store.insert_message(
+            &message_id,
             peer_user_id,
             &self.user_id(),
             body,
@@ -593,6 +929,169 @@ impl AppService {
             now(),
         )?;
         Ok(())
+    }
+
+    /// Refreshes the in-memory view of this account's *other* devices,
+    /// keyed under our own `user_id`. Deliberately never persisted, since
+    /// this isn't a real contact and shouldn't show up in `list_contacts`.
+    async fn refresh_own_devices(&mut self) -> anyhow::Result<()> {
+        let my_id = self.user_id();
+        let my_device_id = self.node.device_id().to_string();
+        let my_master_key = self.node.identity.ed25519_public_base64();
+        let device_certs = self.directory.get_devices(&my_id).await?;
+        let mut verified_devices = Vec::with_capacity(device_certs.len());
+        for cert in &device_certs {
+            if cert.device_id == my_device_id {
+                continue;
+            }
+            if cert.master_ed25519_key != my_master_key {
+                tracing::warn!(
+                    device_id = %cert.device_id,
+                    "dropping a device certificate whose master key doesn't match this account"
+                );
+                continue;
+            }
+            if let Err(e) = Identity::verify(
+                &cert.master_ed25519_key,
+                &cert.signing_bytes(),
+                &cert.signature,
+            ) {
+                tracing::warn!(
+                    error = %e,
+                    device_id = %cert.device_id,
+                    "dropping a device certificate with an invalid signature"
+                );
+                continue;
+            }
+            verified_devices.push(cert.clone());
+        }
+        let presences = self.directory.get_presence_all(&my_id).await?;
+        let mut node_devices = Vec::with_capacity(verified_devices.len());
+        for device in &verified_devices {
+            let Some(presence) = presences.iter().find(|p| p.device_id == device.device_id) else {
+                continue;
+            };
+            let Ok(peer_id) = PeerId::from_str(&presence.peer_id) else {
+                tracing::warn!(device_id = %device.device_id, "this account's own device published an invalid peer id");
+                continue;
+            };
+            let addrs: Vec<Multiaddr> = presence
+                .multiaddrs
+                .iter()
+                .chain(presence.relay_addrs.iter())
+                .filter_map(|a| a.parse::<Multiaddr>().ok())
+                .collect();
+            node_devices.push(crate::contact::DeviceContact {
+                device_id: device.device_id.clone(),
+                curve25519_key: device.device_curve25519_key.clone(),
+                peer_id,
+                addrs,
+            });
+        }
+        self.node.add_contact(&my_id, node_devices);
+        Ok(())
+    }
+
+    /// Stores messages carried by a sync exchange. `insert_message`'s
+    /// `INSERT OR IGNORE` on `message_id` makes this safe to call with
+    /// messages we already have, so no separate dedup check is needed.
+    fn store_synced_messages(&self, messages: Vec<SyncMessage>) {
+        for m in messages {
+            if let Err(e) = self.store.insert_message(
+                &m.message_id,
+                &m.conversation_id,
+                &m.sender_user_id,
+                &m.body,
+                m.attachment.as_ref().map(to_stored_attachment).as_ref(),
+                m.sent_at,
+            ) {
+                tracing::warn!(error = %e, message_id = %m.message_id, "failed to store a synced message");
+            }
+        }
+    }
+
+    /// Manually reconciles message history with one other device of this
+    /// account — the "press Sync on phone" flow. Also re-runs
+    /// `discover_missing_groups` first, since pairing bootstrap never carries groups.
+    pub async fn sync_with_device(&mut self, peer_device_id: &str) -> anyhow::Result<()> {
+        self.discover_missing_groups().await;
+        self.refresh_own_devices().await?;
+        let my_id = self.user_id();
+        if !self
+            .node
+            .has_direct_session_with_device(&my_id, peer_device_id)
+        {
+            let otk = self
+                .directory
+                .claim_one_time_key(&my_id, peer_device_id)
+                .await?;
+            self.node
+                .ensure_outbound_session(&my_id, peer_device_id, &otk.public_key)?;
+        }
+        let since = self.store.load_sync_cursor(peer_device_id)?;
+        let messages = self
+            .store
+            .list_messages_since(since)?
+            .into_iter()
+            .map(to_sync_message)
+            .collect();
+        self.node
+            .send_sync_request(peer_device_id, since, messages)?;
+        Ok(())
+    }
+
+    /// Answers a sync request from one of this account's own other
+    /// devices: stores its delta, gathers our own since its cursor, and
+    /// replies. Best-effort throughout — nothing here should disrupt the event loop.
+    async fn handle_sync_requested(
+        &mut self,
+        from_device_id: &str,
+        since: i64,
+        messages: Vec<SyncMessage>,
+    ) {
+        self.store_synced_messages(messages);
+        if let Err(e) = self.refresh_own_devices().await {
+            tracing::warn!(error = %e, device_id = %from_device_id, "failed to look up the requesting device before answering a sync request");
+            return;
+        }
+        let my_id = self.user_id();
+        if !self
+            .node
+            .has_direct_session_with_device(&my_id, from_device_id)
+        {
+            let otk = match self
+                .directory
+                .claim_one_time_key(&my_id, from_device_id)
+                .await
+            {
+                Ok(otk) => otk,
+                Err(e) => {
+                    tracing::warn!(error = %e, device_id = %from_device_id, "failed to claim a one-time key to answer a sync request");
+                    return;
+                }
+            };
+            if let Err(e) =
+                self.node
+                    .ensure_outbound_session(&my_id, from_device_id, &otk.public_key)
+            {
+                tracing::warn!(error = %e, device_id = %from_device_id, "failed to establish a session to answer a sync request");
+                return;
+            }
+        }
+        let my_delta = match self.store.list_messages_since(since) {
+            Ok(msgs) => msgs.into_iter().map(to_sync_message).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to gather this device's own delta to answer a sync request");
+                return;
+            }
+        };
+        if let Err(e) = self.node.send_sync_response(from_device_id, my_delta) {
+            tracing::warn!(error = %e, device_id = %from_device_id, "failed to send a sync response");
+            return;
+        }
+        if let Err(e) = self.store.save_sync_cursor(from_device_id, now()) {
+            tracing::warn!(error = %e, device_id = %from_device_id, "failed to advance the sync cursor after answering a sync request");
+        }
     }
 
     pub async fn create_group(&mut self, name: &str) -> anyhow::Result<GroupInfo> {
@@ -700,10 +1199,17 @@ impl AppService {
         attachment: Option<AttachmentPayload>,
     ) -> anyhow::Result<()> {
         check_attachment_size(attachment.as_ref())?;
-        self.node
-            .send_group_message(group_id, channel_id, body, attachment.clone())?;
+        let message_id = uuid::Uuid::new_v4().to_string();
+        self.node.send_group_message(
+            group_id,
+            channel_id,
+            &message_id,
+            body,
+            attachment.clone(),
+        )?;
         let conversation_id = format!("{group_id}:{channel_id}");
         self.store.insert_message(
+            &message_id,
             &conversation_id,
             &self.user_id(),
             body,
@@ -803,6 +1309,57 @@ impl AppService {
         }
 
         Ok(record.into())
+    }
+
+    /// Answers a validated pairing request: certifies the joining device's
+    /// keys with this account's master signature, registers the
+    /// certificate with the directory, and sends back the account snapshot.
+    async fn handle_pairing_requested(
+        &mut self,
+        response_id: u64,
+        device_id: String,
+        device_ed25519_key: String,
+        device_curve25519_key: String,
+    ) {
+        let Some(bootstrap) = self.pending_pairing_bootstrap.take() else {
+            tracing::warn!(
+                "received a pairing request with no outstanding offer to answer — ignoring"
+            );
+            return;
+        };
+        let mut cert = wire_proto::DeviceCertificate {
+            device_id,
+            device_ed25519_key,
+            device_curve25519_key,
+            master_ed25519_key: self.node.identity.ed25519_public_base64(),
+            signature: String::new(),
+        };
+        cert.signature = self.node.identity.sign(&cert.signing_bytes());
+
+        if let Err(e) = self
+            .directory
+            .register_device(&self.node.identity, cert.clone())
+            .await
+        {
+            tracing::warn!(error = %e, "failed to register the paired device's certificate with the directory");
+        }
+
+        let master_identity_pickle_json = match self.node.identity.pickle_to_json() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to pickle this account's identity for pairing");
+                return;
+            }
+        };
+        let payload = net::PairingPayload {
+            master_identity_pickle_json,
+            display_name: self.display_name.clone(),
+            cert,
+            bootstrap,
+        };
+        if let Err(e) = self.node.respond_to_pairing(response_id, &payload) {
+            tracing::warn!(error = %e, "failed to send the pairing response");
+        }
     }
 
     /// Handles a fellow member asking us for a group's key (`ChatEvent::
@@ -934,6 +1491,7 @@ impl AppService {
             let event = self.node.next_event().await;
             match event {
                 ChatEvent::DirectMessage {
+                    ref message_id,
                     ref from,
                     ref body,
                     ref attachment,
@@ -943,6 +1501,7 @@ impl AppService {
                         continue;
                     }
                     let _ = self.store.insert_message(
+                        message_id,
                         from,
                         from,
                         body,
@@ -961,6 +1520,7 @@ impl AppService {
                     return event;
                 }
                 ChatEvent::GroupMessage {
+                    ref message_id,
                     ref group_id,
                     ref channel_id,
                     ref from,
@@ -979,6 +1539,7 @@ impl AppService {
                         Ok(true) => {
                             let conversation_id = format!("{group_id}:{channel_id}");
                             let _ = self.store.insert_message(
+                                message_id,
                                 &conversation_id,
                                 from,
                                 body,
@@ -1056,8 +1617,15 @@ impl AppService {
                     // Auto-declined (we were already busy) — not worth
                     // surfacing, loop around for the next real event.
                 }
-                ChatEvent::CallAccepted { from, call_id } => {
-                    if let Some(translated) = self.handle_call_accepted(from, call_id).await {
+                ChatEvent::CallAccepted {
+                    from,
+                    from_device_id,
+                    call_id,
+                } => {
+                    if let Some(translated) = self
+                        .handle_call_accepted(from, from_device_id, call_id)
+                        .await
+                    {
                         return translated;
                     }
                     // Didn't match our own outgoing call (stale/unrelated —
@@ -1084,6 +1652,44 @@ impl AppService {
                         call_id,
                         reason,
                     };
+                }
+                ChatEvent::PairingRequested {
+                    response_id,
+                    device_id,
+                    device_ed25519_key,
+                    device_curve25519_key,
+                } => {
+                    self.handle_pairing_requested(
+                        response_id,
+                        device_id,
+                        device_ed25519_key,
+                        device_curve25519_key,
+                    )
+                    .await;
+                    // Purely an internal protocol handshake, like
+                    // `GroupKeyRequested` — never surfaced to the frontend,
+                    // loop around for the next real event.
+                }
+                ChatEvent::SyncRequested {
+                    from_device_id,
+                    since,
+                    messages,
+                } => {
+                    self.handle_sync_requested(&from_device_id, since, messages)
+                        .await;
+                    // Purely an internal protocol handshake, like
+                    // `PairingRequested` — never surfaced to the frontend,
+                    // loop around for the next real event.
+                }
+                ChatEvent::SyncCompleted {
+                    ref device_id,
+                    ref messages,
+                } => {
+                    self.store_synced_messages(messages.clone());
+                    if let Err(e) = self.store.save_sync_cursor(device_id, now()) {
+                        tracing::warn!(error = %e, device_id = %device_id, "failed to advance the sync cursor after a completed sync");
+                    }
+                    return event;
                 }
                 other => return other,
             }
@@ -1178,7 +1784,16 @@ impl AppService {
     /// isn't necessarily someone we've 1:1-messaged) and opens a stream to
     /// them if we're the initiating side of the pair.
     async fn connect_voice_peer(&mut self, user_id: &str) -> anyhow::Result<()> {
-        let presence = self.directory.get_presence(user_id).await?;
+        // Picks whichever device's presence is returned first — a known
+        // simplification, since call-signaling doesn't yet track which
+        // specific device is the one actually in the call.
+        let presence = self
+            .directory
+            .get_presence_all(user_id)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("{user_id} has no currently reachable device"))?;
         let peer_id = PeerId::from_str(&presence.peer_id)
             .map_err(|e| anyhow::anyhow!("participant published an invalid peer id: {e}"))?;
         let addrs: Vec<Multiaddr> = presence
@@ -1487,7 +2102,16 @@ impl AppService {
     /// first called them (`call_contact`). Ignored if it doesn't match a
     /// call we're actually currently ringing (a race with our own
     /// cancellation, or a stale/replayed message).
-    async fn handle_call_accepted(&mut self, from: String, call_id: String) -> Option<ChatEvent> {
+    ///
+    /// `CallInvite` fanned out to every device, so best-effort notifies the
+    /// ones that didn't answer to stop ringing; a failure there doesn't
+    /// affect the call we're actually starting here.
+    async fn handle_call_accepted(
+        &mut self,
+        from: String,
+        from_device_id: String,
+        call_id: String,
+    ) -> Option<ChatEvent> {
         let matches = self.pending_call.as_ref().is_some_and(|p| {
             p.call_id == call_id && p.peer_user_id == from && p.direction == CallDirection::Outgoing
         });
@@ -1498,6 +2122,12 @@ impl AppService {
             .pending_call
             .take()
             .expect("just checked is_some_and above");
+        if let Err(e) = self
+            .node
+            .send_call_end_to_other_devices(&from, &call_id, &from_device_id)
+        {
+            tracing::warn!(error = %e, %from, "failed to notify sibling devices that the call was answered elsewhere");
+        }
         if let Err(e) = self
             .start_direct_call(
                 &from,
@@ -1511,7 +2141,11 @@ impl AppService {
             let _ = self.node.send_call_end(&from, &call_id);
             return Some(ChatEvent::CallEnded { from, call_id });
         }
-        Some(ChatEvent::CallAccepted { from, call_id })
+        Some(ChatEvent::CallAccepted {
+            from,
+            from_device_id,
+            call_id,
+        })
     }
 
     /// Reacts to the callee declining our outgoing call. Ignored (`None`)
@@ -1701,9 +2335,10 @@ pub async fn resolve_contacts_online_status(
         let directory = directory.clone();
         async move {
             let is_online = directory
-                .get_presence(&user_id)
+                .get_presence_all(&user_id)
                 .await
-                .is_ok_and(|record| record.share_online_status);
+                .map(|records| records.iter().any(|r| r.share_online_status))
+                .unwrap_or(false);
             (user_id, is_online)
         }
     });

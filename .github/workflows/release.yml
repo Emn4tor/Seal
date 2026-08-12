@@ -162,6 +162,10 @@ jobs:
         working-directory: apps/desktop
         env:
           NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+          # This runner doesn't have sccache installed, so the `cargo build`
+          # this triggers would otherwise fail immediately — same fix as
+          # `publish-tauri`'s env block above.
+          CARGO_BUILD_RUSTC_WRAPPER: ""
         run: npm run tauri android build -- --apk --target aarch64 --ci
 
       - name: Build APK (debug-signed, no release keystore configured)
@@ -169,6 +173,7 @@ jobs:
         working-directory: apps/desktop
         env:
           NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+          CARGO_BUILD_RUSTC_WRAPPER: ""
         run: npm run tauri android build -- --apk --target aarch64 --debug --ci
 
       - name: Rename and upload

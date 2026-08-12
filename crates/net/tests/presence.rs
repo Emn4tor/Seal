@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use directory_server::{AppState, build_public_router};
 use identity::Identity;
 use net::presence::push_presence;
-use wire_proto::{PresenceRecord, RegisterUserRequest};
+use wire_proto::{PresenceListResponse, RegisterUserRequest};
 
 fn now() -> i64 {
     SystemTime::now()
@@ -61,6 +61,7 @@ async fn presence_heartbeat_reaches_a_real_directory_server() {
     push_presence(
         &base_url,
         &identity,
+        "device-1",
         "12D3KooWTestPeerId",
         vec!["/ip4/127.0.0.1/udp/4001/quic-v1".to_string()],
         vec![],
@@ -74,7 +75,9 @@ async fn presence_heartbeat_reaches_a_real_directory_server() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    let record: PresenceRecord = resp.json().await.unwrap();
+    let listed: PresenceListResponse = resp.json().await.unwrap();
+    assert_eq!(listed.devices.len(), 1);
+    let record = &listed.devices[0];
     assert_eq!(record.peer_id, "12D3KooWTestPeerId");
     assert_eq!(
         record.multiaddrs,

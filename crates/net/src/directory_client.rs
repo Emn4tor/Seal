@@ -3,9 +3,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use identity::Identity;
 use reqwest::{Client, StatusCode};
 use wire_proto::{
-    ChannelKind, ChannelRecord, ClaimedOtk, CreateChannelRequest, CreateGroupRequest, GroupRecord,
-    OneTimeKeyEntry, PresenceRecord, PresenceUpdateRequest, RegisterUserRequest, RelayInfoResponse,
-    RosterUpdateRequest, UploadOtkRequest, UserRecord,
+    ChannelKind, ChannelRecord, ClaimedOtk, CreateChannelRequest, CreateGroupRequest,
+    DeviceCertificate, DeviceListResponse, GroupRecord, OneTimeKeyEntry, PresenceListResponse,
+    PresenceRecord, PresenceUpdateRequest, RegisterDeviceRequest, RegisterUserRequest,
+    RelayInfoResponse, RosterUpdateRequest, UploadOtkRequest, UserRecord,
 };
 
 use crate::error::NetError;
@@ -115,6 +116,7 @@ impl DirectoryClient {
     pub async fn put_presence(
         &self,
         identity: &Identity,
+        device_id: &str,
         peer_id: &str,
         multiaddrs: Vec<String>,
         relay_addrs: Vec<String>,
@@ -123,6 +125,7 @@ impl DirectoryClient {
     ) -> Result<PresenceRecord, NetError> {
         let mut req = PresenceUpdateRequest {
             user_id: identity.user_id(),
+            device_id: device_id.to_string(),
             peer_id: peer_id.to_string(),
             multiaddrs,
             relay_addrs,
@@ -135,19 +138,23 @@ impl DirectoryClient {
         req.signature = identity.sign(&req.signing_bytes());
         self.send_json(
             reqwest::Method::PUT,
-            &format!("/v1/presence/{}", identity.user_id()),
+            &format!("/v1/presence/{}/{device_id}", identity.user_id()),
             Some(&req),
         )
         .await
     }
 
-    pub async fn get_presence(&self, user_id: &str) -> Result<PresenceRecord, NetError> {
-        self.send_json::<(), _>(
-            reqwest::Method::GET,
-            &format!("/v1/presence/{user_id}"),
-            None,
-        )
-        .await
+    /// Every currently-live device presence for `user_id` — a sender fans
+    /// out to all of them rather than assuming a single reachable address.
+    pub async fn get_presence_all(&self, user_id: &str) -> Result<Vec<PresenceRecord>, NetError> {
+        let resp: PresenceListResponse = self
+            .send_json::<(), _>(
+                reqwest::Method::GET,
+                &format!("/v1/presence/{user_id}"),
+                None,
+            )
+            .await?;
+        Ok(resp.devices)
     }
 
     /// The directory server's own libp2p relay identity, if it's running
@@ -170,11 +177,13 @@ impl DirectoryClient {
     pub async fn upload_one_time_keys(
         &self,
         identity: &Identity,
+        device_id: &str,
         keys: Vec<OneTimeKeyEntry>,
         fallback_key: Option<OneTimeKeyEntry>,
     ) -> Result<(), NetError> {
         let mut req = UploadOtkRequest {
             user_id: identity.user_id(),
+            device_id: device_id.to_string(),
             keys,
             fallback_key,
             timestamp: now(),
@@ -187,13 +196,57 @@ impl DirectoryClient {
             .await
     }
 
-    pub async fn claim_one_time_key(&self, user_id: &str) -> Result<ClaimedOtk, NetError> {
+    /// Claims one of `user_id`'s *specific device*'s one-time keys — each
+    /// device keeps an independent pool, so the caller must already know
+    /// which device it's establishing a session with.
+    pub async fn claim_one_time_key(
+        &self,
+        user_id: &str,
+        device_id: &str,
+    ) -> Result<ClaimedOtk, NetError> {
         self.send_json::<(), _>(
             reqwest::Method::GET,
-            &format!("/v1/users/{user_id}/otk/claim"),
+            &format!("/v1/users/{user_id}/otk/claim/{device_id}"),
             None,
         )
         .await
+    }
+
+    /// Registers this device's certificate — always signed and called by
+    /// the account's master device in v1; a non-master device registering
+    /// a *further* device isn't supported yet.
+    pub async fn register_device(
+        &self,
+        identity: &Identity,
+        cert: DeviceCertificate,
+    ) -> Result<DeviceCertificate, NetError> {
+        let mut req = RegisterDeviceRequest {
+            user_id: identity.user_id(),
+            cert,
+            timestamp: now(),
+            nonce: nonce(),
+            signature: String::new(),
+        };
+        req.signature = identity.sign(&req.signing_bytes());
+        self.send_json(
+            reqwest::Method::POST,
+            &format!("/v1/users/{}/devices", identity.user_id()),
+            Some(&req),
+        )
+        .await
+    }
+
+    /// A user's full device list, unauthenticated read — same trust level
+    /// as `get_user`. Callers must verify each cert themselves before trusting it.
+    pub async fn get_devices(&self, user_id: &str) -> Result<Vec<DeviceCertificate>, NetError> {
+        let resp: DeviceListResponse = self
+            .send_json::<(), _>(
+                reqwest::Method::GET,
+                &format!("/v1/users/{user_id}/devices"),
+                None,
+            )
+            .await?;
+        Ok(resp.devices)
     }
 
     pub async fn create_group(

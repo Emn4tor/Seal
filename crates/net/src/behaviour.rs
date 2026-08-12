@@ -2,6 +2,7 @@ use libp2p::identity::Keypair;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{StreamProtocol, autonat, dcutr, gossipsub, identify, ping, relay, request_response};
 
+use crate::pairing_protocol::{PAIRING_PROTOCOL, PairingRequest, PairingResponse};
 use crate::protocol::{ChatRequest, ChatResponse, DIRECT_PROTOCOL};
 
 /// Purely cosmetic version string exchanged by the `identify` protocol —
@@ -23,6 +24,9 @@ pub struct ChatBehaviour {
     pub dcutr: dcutr::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
     pub request_response: request_response::cbor::Behaviour<ChatRequest, ChatResponse>,
+    /// Device-linking (QR pairing) handshake — separate from
+    /// `request_response` since it must work before any Olm session exists.
+    pub pairing: request_response::cbor::Behaviour<PairingRequest, PairingResponse>,
     pub autonat: autonat::Behaviour,
     /// Raw per-peer duplex byte streams for continuous voice audio — neither
     /// `request_response` (discrete request->response) nor `gossipsub`
@@ -69,6 +73,21 @@ pub fn build_behaviour(keypair: &Keypair, relay_client: relay::client::Behaviour
         request_response::Config::default(),
     );
 
+    // Same size ceiling as `request_response` above — the bootstrap payload
+    // (contacts, group rosters/session keys) is small, but there's no
+    // reason to give it a tighter cap than every other transport message.
+    let pairing_codec = request_response::cbor::codec::Codec::default()
+        .set_request_size_maximum(MAX_TRANSPORT_MESSAGE_SIZE as u64)
+        .set_response_size_maximum(MAX_TRANSPORT_MESSAGE_SIZE as u64);
+    let pairing = request_response::cbor::Behaviour::with_codec(
+        pairing_codec,
+        [(
+            StreamProtocol::new(PAIRING_PROTOCOL),
+            request_response::ProtocolSupport::Full,
+        )],
+        request_response::Config::default(),
+    );
+
     ChatBehaviour {
         identify,
         ping: ping::Behaviour::default(),
@@ -76,6 +95,7 @@ pub fn build_behaviour(keypair: &Keypair, relay_client: relay::client::Behaviour
         dcutr: dcutr::Behaviour::new(local_peer_id),
         gossipsub,
         request_response,
+        pairing,
         autonat: autonat::Behaviour::new(local_peer_id, autonat::Config::default()),
         stream: libp2p_stream::Behaviour::new(),
     }

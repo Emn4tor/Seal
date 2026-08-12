@@ -5,12 +5,9 @@ use wire_proto::PresenceUpdateRequest;
 
 use crate::error::NetError;
 
-/// Same reasoning and value as `DirectoryClient`'s own timeout: without
-/// one, a connection left over from before the OS suspended the process
-/// can sit there looking alive but never actually deliver a response, and
-/// `run_presence_heartbeat_loop` awaits each `push_presence` sequentially
-/// on a fixed interval, so one hung request here would silently stop every
-/// future re-announcement forever, not just delay this one.
+/// Same reasoning as `DirectoryClient`'s timeout: without one, a stale
+/// connection could hang forever, silently stopping every future
+/// re-announcement since the heartbeat loop awaits each push sequentially.
 const PRESENCE_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn now() -> i64 {
@@ -36,6 +33,7 @@ fn nonce() -> String {
 pub async fn push_presence(
     directory_base_url: &str,
     identity: &Identity,
+    device_id: &str,
     peer_id: &str,
     multiaddrs: Vec<String>,
     relay_addrs: Vec<String>,
@@ -45,6 +43,7 @@ pub async fn push_presence(
     let user_id = identity.user_id();
     let mut req = PresenceUpdateRequest {
         user_id: user_id.clone(),
+        device_id: device_id.to_string(),
         peer_id: peer_id.to_string(),
         multiaddrs,
         relay_addrs,
@@ -57,9 +56,10 @@ pub async fn push_presence(
     req.signature = identity.sign(&req.signing_bytes());
 
     let url = format!(
-        "{}/v1/presence/{}",
+        "{}/v1/presence/{}/{}",
         directory_base_url.trim_end_matches('/'),
-        user_id
+        user_id,
+        device_id
     );
     let resp = reqwest::Client::new()
         .put(&url)
@@ -77,16 +77,14 @@ pub async fn push_presence(
     Ok(())
 }
 
-/// Runs `push_presence` on a fixed interval until the returned task is
-/// dropped/aborted. `get_multiaddrs`/`get_relay_addrs` are called fresh on
-/// every tick since the swarm's known listen/external addresses can change
-/// over time (NAT re-discovery, relay reservation changes, etc) — in
-/// practice both closures currently just re-clone a value captured once at
-/// startup (see `AppService::load_or_create`), since nothing yet re-derives
-/// either mid-run, but the shape leaves room for that later.
+/// Runs `push_presence` on a fixed interval until dropped/aborted.
+/// `get_multiaddrs`/`get_relay_addrs` are called fresh each tick so
+/// addresses can change over time.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_presence_heartbeat_loop(
     directory_base_url: String,
     identity: std::sync::Arc<Identity>,
+    device_id: String,
     peer_id: String,
     get_multiaddrs: impl Fn() -> Vec<String> + Send + 'static,
     get_relay_addrs: impl Fn() -> Vec<String> + Send + 'static,
@@ -103,6 +101,7 @@ pub async fn run_presence_heartbeat_loop(
         if let Err(e) = push_presence(
             &directory_base_url,
             &identity,
+            &device_id,
             &peer_id,
             multiaddrs,
             relay_addrs,

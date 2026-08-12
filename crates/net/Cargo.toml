@@ -40,6 +40,17 @@ futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
 rand = "0.8"
+bincode.workspace = true
+# Both already transitive dependencies via `vodozemac` (used by `identity`/
+# `crypto-session`) at these exact versions — added directly here rather
+# than pulling in a new library, same reasoning as `identity`'s
+# `security-framework` dependency. Used only for the pairing handshake's
+# app-layer ECDH-wrapped encryption on top of the already-Noise-encrypted
+# transport (defense in depth for a device certificate + account bootstrap
+# data, consistent with how every other sensitive payload in this app gets
+# Olm/Megolm on top of Noise rather than relying on the transport alone).
+x25519-dalek = { version = "2", features = ["getrandom"] }
+chacha20poly1305 = "0.10"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

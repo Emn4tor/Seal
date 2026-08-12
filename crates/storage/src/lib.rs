@@ -1,4 +1,5 @@
 pub mod blocked_store;
+pub mod contact_devices_store;
 pub mod contacts_store;
 pub mod crypto;
 pub mod db;
@@ -9,7 +10,9 @@ pub mod message_store;
 pub mod p2p_identity_store;
 pub mod purge;
 pub mod store;
+pub mod sync_state_store;
 
+pub use contact_devices_store::StoredContactDevice;
 pub use contacts_store::StoredContact;
 pub use error::StorageError;
 pub use groups_store::{StoredChannel, StoredGroup, StoredGroupMember};

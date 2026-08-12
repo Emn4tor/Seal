@@ -37,4 +37,60 @@ impl LocalStore {
         };
         decrypt_blob(&self.kek, &blob).map(Some)
     }
+
+    /// This device's own random identifier — `None` until `save_device_id`
+    /// has been called at least once. Not encrypted: it's just a routing
+    /// label already visible to the directory server and to contacts.
+    pub fn load_device_id(&self) -> Result<Option<String>, StorageError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT device_id FROM p2p_identity WHERE id = 0",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Requires a prior `save_p2p_keypair` call — `WHERE id = 0` updates
+    /// zero rows silently rather than erroring if there's no row yet.
+    pub fn save_device_id(&self, device_id: &str) -> Result<(), StorageError> {
+        self.conn.execute(
+            "UPDATE p2p_identity SET device_id = ?1 WHERE id = 0",
+            params![device_id],
+        )?;
+        Ok(())
+    }
+
+    /// This device's own Olm account pickle, deliberately separate from
+    /// the account's master identity pickle (see `schema.sql`'s doc on
+    /// `device_olm_pickle_blob`). Same sequencing requirement as `save_device_id`.
+    pub fn save_device_olm_pickle(&self, pickle_json: &str) -> Result<(), StorageError> {
+        let blob = encrypt_blob(&self.kek, pickle_json.as_bytes());
+        self.conn.execute(
+            "UPDATE p2p_identity SET device_olm_pickle_blob = ?1 WHERE id = 0",
+            params![blob],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_device_olm_pickle(&self) -> Result<Option<String>, StorageError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT device_olm_pickle_blob FROM p2p_identity WHERE id = 0",
+                [],
+                |row| row.get::<_, Option<Vec<u8>>>(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(blob) = row else {
+            return Ok(None);
+        };
+        let bytes = decrypt_blob(&self.kek, &blob)?;
+        Ok(Some(String::from_utf8(bytes).map_err(|e| {
+            StorageError::Crypto(format!("device olm pickle was not valid utf-8: {e}"))
+        })?))
+    }
 }

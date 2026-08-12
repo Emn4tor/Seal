@@ -36,13 +36,13 @@ fn messages_round_trip_and_are_encrypted_at_rest() {
     let store = LocalStore::open(&db_path, [2u8; 32]).unwrap();
 
     store
-        .insert_message("conv-1", "alice", "hello", None, 100)
+        .insert_message("msg-1", "conv-1", "alice", "hello", None, 100)
         .unwrap();
     store
-        .insert_message("conv-1", "bob", "hi back", None, 101)
+        .insert_message("msg-2", "conv-1", "bob", "hi back", None, 101)
         .unwrap();
     store
-        .insert_message("conv-2", "alice", "unrelated", None, 100)
+        .insert_message("msg-3", "conv-2", "alice", "unrelated", None, 100)
         .unwrap();
 
     let conv1 = store.list_messages("conv-1").unwrap();
@@ -69,13 +69,20 @@ fn one_corrupted_message_does_not_break_the_rest_of_the_conversation() {
     let store = LocalStore::open(&db_path, [9u8; 32]).unwrap();
 
     store
-        .insert_message("conv-1", "alice", "good message one", None, 100)
+        .insert_message("msg-1", "conv-1", "alice", "good message one", None, 100)
         .unwrap();
     store
-        .insert_message("conv-1", "bob", "this one gets corrupted", None, 101)
+        .insert_message(
+            "msg-2",
+            "conv-1",
+            "bob",
+            "this one gets corrupted",
+            None,
+            101,
+        )
         .unwrap();
     store
-        .insert_message("conv-1", "alice", "good message two", None, 102)
+        .insert_message("msg-3", "conv-1", "alice", "good message two", None, 102)
         .unwrap();
     drop(store);
 
@@ -111,11 +118,18 @@ fn message_with_attachment_round_trips_and_stays_encrypted_at_rest() {
         data: vec![0u8, 1, 2, 3, 255, 254, 253, 252],
     };
     store
-        .insert_message("conv-1", "alice", "look at this", Some(&attachment), 100)
+        .insert_message(
+            "msg-1",
+            "conv-1",
+            "alice",
+            "look at this",
+            Some(&attachment),
+            100,
+        )
         .unwrap();
     // A plain-text message alongside it, to confirm the two don't interfere.
     store
-        .insert_message("conv-1", "bob", "nice", None, 101)
+        .insert_message("msg-2", "conv-1", "bob", "nice", None, 101)
         .unwrap();
 
     let messages = store.list_messages("conv-1").unwrap();

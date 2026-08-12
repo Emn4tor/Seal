@@ -9,6 +9,7 @@ use crate::store::LocalStore;
 
 #[derive(Debug, Clone)]
 pub struct StoredMessage {
+    pub message_id: String,
     pub conversation_id: String,
     pub sender_user_id: String,
     pub body: String,
@@ -24,15 +25,8 @@ pub struct StoredAttachment {
     pub data: Vec<u8>,
 }
 
-/// The on-disk shape of `body_blob`'s plaintext, once decrypted — kept
-/// separate from `StoredMessage`/`StoredAttachment` (the public API) so
-/// this file is the only place that needs to know the blob is JSON with
-/// the attachment bytes base64-encoded. JSON has no binary type, so the
-/// bytes need *some* text encoding to stay inside a JSON value; unlike the
-/// P2P wire format (see `crates/core/src/node.rs`, which switched to
-/// bincode for exactly this reason), the size/perf cost of base64 doesn't
-/// matter here — this is written and read once, locally, never
-/// retransmitted.
+/// On-disk shape of `body_blob`'s decrypted plaintext, kept separate from
+/// the public `StoredMessage`/`StoredAttachment`.
 #[derive(Serialize, Deserialize)]
 struct AttachmentOnDisk {
     filename: String,
@@ -51,8 +45,14 @@ struct MessageOnDisk {
 impl LocalStore {
     /// `conversation_id` is a DM's peer user_id or a group's group_id —
     /// the caller decides the convention, this table doesn't care.
+    ///
+    /// `INSERT OR IGNORE` on `message_id` rather than a plain `INSERT`:
+    /// this is what makes re-running a manual sync safe to repeat — an
+    /// already-stored message is silently skipped, not duplicated.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_message(
         &self,
+        message_id: &str,
         conversation_id: &str,
         sender_user_id: &str,
         body: &str,
@@ -72,24 +72,25 @@ impl LocalStore {
             .map_err(|e| StorageError::Crypto(format!("failed to encode message: {e}")))?;
         let body_blob = encrypt_blob(&self.kek, &json);
         self.conn.execute(
-            "INSERT INTO messages (conversation_id, sender_user_id, body_blob, sent_at, delivered)
-             VALUES (?1, ?2, ?3, ?4, 1)",
-            params![conversation_id, sender_user_id, body_blob, sent_at],
+            "INSERT OR IGNORE INTO messages (message_id, conversation_id, sender_user_id, body_blob, sent_at, delivered)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            params![message_id, conversation_id, sender_user_id, body_blob, sent_at],
         )?;
         Ok(())
     }
 
     pub fn list_messages(&self, conversation_id: &str) -> Result<Vec<StoredMessage>, StorageError> {
         let mut stmt = self.conn.prepare(
-            "SELECT sender_user_id, body_blob, sent_at FROM messages
+            "SELECT message_id, sender_user_id, body_blob, sent_at FROM messages
              WHERE conversation_id = ?1 ORDER BY sent_at ASC, id ASC",
         )?;
         let rows = stmt
             .query_map(params![conversation_id], |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -101,8 +102,15 @@ impl LocalStore {
         // this crate's other local-data reads.
         let messages = rows
             .into_iter()
-            .filter_map(|(sender_user_id, body_blob, sent_at)| {
-                match Self::decode_message(&self.kek, conversation_id, &sender_user_id, &body_blob, sent_at) {
+            .filter_map(|(message_id, sender_user_id, body_blob, sent_at)| {
+                match Self::decode_message(
+                    &self.kek,
+                    message_id,
+                    conversation_id,
+                    &sender_user_id,
+                    &body_blob,
+                    sent_at,
+                ) {
                     Ok(message) => Some(message),
                     Err(e) => {
                         tracing::warn!(
@@ -119,8 +127,58 @@ impl LocalStore {
         Ok(messages)
     }
 
+    /// Every message across every conversation sent or received after
+    /// `since`, for `AppService::sync_with_device`. Rows predating
+    /// `message_id` (`NULL`) are skipped: there's no stable id to sync them under.
+    pub fn list_messages_since(&self, since: i64) -> Result<Vec<StoredMessage>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT message_id, conversation_id, sender_user_id, body_blob, sent_at FROM messages
+             WHERE sent_at > ?1 AND message_id IS NOT NULL ORDER BY sent_at ASC, id ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![since], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let messages = rows
+            .into_iter()
+            .filter_map(
+                |(message_id, conversation_id, sender_user_id, body_blob, sent_at)| {
+                    match Self::decode_message(
+                        &self.kek,
+                        Some(message_id),
+                        &conversation_id,
+                        &sender_user_id,
+                        &body_blob,
+                        sent_at,
+                    ) {
+                        Ok(message) => Some(message),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                conversation_id,
+                                sent_at,
+                                "skipping a message that failed to decode while gathering sync candidates"
+                            );
+                            None
+                        }
+                    }
+                },
+            )
+            .collect();
+        Ok(messages)
+    }
+
     fn decode_message(
         kek: &[u8; 32],
+        message_id: Option<String>,
         conversation_id: &str,
         sender_user_id: &str,
         body_blob: &[u8],
@@ -144,6 +202,10 @@ impl LocalStore {
             })
             .transpose()?;
         Ok(StoredMessage {
+            // Pre-multi-device rows have no message_id (see
+            // `list_messages_since`'s doc comment) — `list_messages` still
+            // needs to display them, just without a real sync-able id.
+            message_id: message_id.unwrap_or_default(),
             conversation_id: conversation_id.to_string(),
             sender_user_id: sender_user_id.to_string(),
             body: on_disk.body,

@@ -12,6 +12,28 @@ presence record, or group-roster change on anyone's behalf. Full compromise or a
 against the operator yields: pubkeys, display names, and *stale* network addresses. Nothing
 about who talked to whom about what.
 
+One narrow, deliberate exception to "structurally opaque": `POST /v1/users/{user_id}/devices`
+(`directory-server::routes::devices::register_device`) verifies not just the outer request
+signature (every route does that) but also the *nested* `DeviceCertificate` signature inside
+the body, using the same `ed25519_dalek::verify_strict` primitive `auth.rs` already calls
+everywhere else — this stops anyone from `POST`ing a garbage device certificate onto someone
+else's `user_id` (device-list poisoning). It's still write-authorization, the same category of
+check every other endpoint performs, one level deeper; it doesn't touch message content and
+doesn't require `crypto-session` as a dependency.
+
+**Multi-device identity.** An account's trust anchor is its master Ed25519/Curve25519 keypair
+(`crates/identity`) — `user_id` is its fingerprint, contacts verify each other against it,
+safety numbers are about it. Every device (including the very first one) additionally
+generates its own local Olm identity (`ChatNode::device_identity`, a distinct vodozemac
+`Account`, never the same Curve25519 key as the master identity or any other device) and
+registers a `DeviceCertificate{device_id, device_ed25519_key, device_curve25519_key,
+master_ed25519_key, signature}` signed by the master key. Sending a message fans out one Olm
+encryption per verified device a contact has (`ChatNode::encrypt_and_send_direct`); a contact
+adder verifies every cert against the claimed master key client-side too
+(`Identity::verify`, in `AppService::add_contact_by_user_id`), not just trusting the
+directory's own check above. Two devices are cryptographically independent from the moment
+each has its own device cert: neither needs the other online to send or receive.
+
 **Network eavesdropping between peers.** Transport is Noise-encrypted (libp2p) end to end,
 and message content is *additionally* encrypted above that with Olm (1:1,
 `crates/crypto-session/src/olm.rs`) or Megolm (groups, `.../megolm.rs`); an attacker who breaks
@@ -52,9 +74,37 @@ bytes, the Noise handshake is between the real endpoints, not the relay.
 - **A single compromised group member can leak the current Megolm key** to whoever they
   want, going forward, until the next rotation. This is inherent to any sender-keys group
   scheme (Megolm, Signal's sender keys, etc.), not a bug here.
-- **No multi-device support.** One identity == one device's keychain entry
-  (`identity::Keychain::for_app_data_dir`). Restoring an identity onto a second device isn't
-  implemented.
+- **QR pairing transmits the account's master private key, not just a device certificate.**
+  This is a deliberate deviation from the safer design (device certs only, private keys never
+  leaving the device that generated them) that a from-scratch multi-device scheme would use —
+  forced by `directory-server`'s write-auth model requiring the *master* key's signature on
+  every account-level write (`register_user`, `put_presence`, `upload_otks`,
+  `register_device`), which a linked device would otherwise be unable to produce on its own if
+  it ever needed to re-register the account (e.g. the directory was purged while the original
+  device was offline) — and the user explicitly requires every device to work fully
+  independently, not as a read-only mirror of one "real" device. Concretely
+  (`net::PairingPayload`, `AppService::join_via_pairing`): the joining device receives
+  `master_identity_pickle_json` — the account's actual signing key — over the pairing channel.
+  That channel is defense in depth, not a plaintext transfer: an ephemeral X25519 ECDH key
+  (fresh per pairing attempt, `net::pairing_protocol::generate_ephemeral_keypair`) wraps the
+  payload in XChaCha20-Poly1305, itself riding inside the already Noise-encrypted libp2p
+  transport, gated by a single-use token that expires after `PAIRING_TOKEN_TTL_SECS` (120s).
+  But the blast radius of a compromised pairing exchange is categorically larger than a
+  device-cert-only scheme's: intercepting one doesn't just add a rogue *device*, it hands over
+  the whole account, permanently, with no revocation path (see the next point). Treat the QR
+  code and the ~2-minute pairing window with the same care as the private key itself — don't
+  display or scan it somewhere a screen-recorder, shoulder-surfer, or network position you
+  don't trust could capture it.
+- **No device revocation.** There's no way to invalidate a device's certificate or its copy of
+  the master private key once pairing has completed — removing a "device" isn't implemented,
+  even at the storage layer. A lost or compromised paired device (phone theft, in particular)
+  currently has no remedy short of abandoning the account entirely (a fresh identity, contacts
+  re-added one by one). This is the sharpest edge of the current multi-device design and the
+  most important gap to close next.
+- **Any paired device can mint further device certificates**, not just the one that showed the
+  original QR code — a consequence of every device receiving the master private key (previous
+  point), not a separate design choice. There's no "primary device" concept once pairing has
+  happened once.
 - **No forward secrecy across an app restart yet.** Olm/Megolm session *state* lives in
   memory only (`crypto-session`'s managers), not yet persisted to `storage`'s
   `sessions_olm`/`sessions_megolm_*` tables (schema exists, CRUD doesn't yet). A restart

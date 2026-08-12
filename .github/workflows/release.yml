@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'v*'
+  # Lets a maintainer dry-run this workflow from the Actions tab without
+  # pushing a real version tag — useful for testing the Android/iOS jobs
+  # below, which can't be exercised locally the way the desktop build can.
+  workflow_dispatch:
 
 jobs:
   publish-tauri:
@@ -71,3 +75,149 @@ jobs:
           args: ${{ matrix.args }}
           releaseDraft: true
           prerelease: false
+
+  # Builds and uploads to the same draft release `publish-tauri` created.
+  # Unlike that job, this one doesn't go through `tauri-action` at all: its
+  # upload step is specifically about producing filenames that say what
+  # platform they're for, and `tauri-action`'s own upload/naming for the
+  # desktop targets above is left untouched deliberately, since it has to
+  # stay byte-for-byte consistent with what `latest.json` (the updater
+  # manifest it also generates) expects — renaming those risks silently
+  # breaking auto-updates for everyone already running Seal. Mobile has no
+  # such constraint: `tauri-plugin-updater` is compiled out on iOS/Android
+  # (see `apps/desktop/src-tauri/Cargo.toml`), so nothing depends on these
+  # filenames but a human clicking a download link.
+  publish-android:
+    needs: publish-tauri
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: Install JavaScript dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager --install "ndk;27.0.12077973"
+
+      - name: Scaffold Android project
+        working-directory: apps/desktop
+        # Not committed to the repo the way `src-tauri/gen/apple` is —
+        # regenerated fresh every run instead, so there's no Android
+        # Studio project checked in for a signing config or NDK path to
+        # go stale in. `tauri.conf.json`/`Cargo.toml` are the actual
+        # source of truth either way; this just re-derives the same
+        # Gradle project from them.
+        run: npm run tauri android init -- --ci
+        env:
+          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+
+      # A real release keystore, only if this repo has one configured (see
+      # "Android release signing" in docs/RELEASING.md) — falls back to a
+      # debug-signed APK otherwise, which installs fine for sideloading/
+      # testing but isn't what you'd want to hand out as a public release.
+      - name: Configure release signing
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        working-directory: apps/desktop/src-tauri/gen/android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
+          cat > keystore.properties <<PROPS
+          storeFile=release.keystore
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          PROPS
+
+      - name: Build APK (release-signed)
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        working-directory: apps/desktop
+        env:
+          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+        run: npm run tauri android build -- --apk --target aarch64 --ci
+
+      - name: Build APK (debug-signed, no release keystore configured)
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 == '' }}
+        working-directory: apps/desktop
+        env:
+          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+        run: npm run tauri android build -- --apk --target aarch64 --debug --ci
+
+      - name: Rename and upload
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          apk=$(find apps/desktop/src-tauri/gen/android -iname '*.apk' | head -n1)
+          out="Seal-${version}-android-arm64.apk"
+          cp "$apk" "$out"
+          gh release upload "v${version}" "$out" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-ios:
+    needs: publish-tauri
+    permissions:
+      contents: write
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: Install JavaScript dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      # No Apple Developer Program membership behind this project yet (see
+      # docs/RELEASING.md's Apple signing section — same $99/yr constraint
+      # as macOS notarization above, and iOS is strict about it in a way
+      # macOS isn't: there's no ad-hoc-signed fallback that installs on a
+      # real device without one. `--no-sign --archive-only` builds and
+      # archives without ever needing a signing identity, which is enough
+      # to catch a real compile regression on every release (same value
+      # the `rust` CI job's 3-OS matrix gets), but can't produce an .ipa
+      # anyone could actually install — so this job doesn't upload one.
+      # See docs/RELEASING.md for what to add here once there's a paid
+      # account: a certificate + provisioning profile as secrets, this
+      # step switched to a real `--export-method`, and an upload step
+      # added after it (the `publish-android` job above is the template
+      # for "upload to the same draft release via `gh release upload`").
+      - name: Build and archive (unsigned, validates the build only)
+        working-directory: apps/desktop
+        env:
+          CARGO_BUILD_RUSTC_WRAPPER: ""
+        run: npm run tauri ios build -- --target aarch64 --no-sign --archive-only --ci

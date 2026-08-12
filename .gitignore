@@ -16,6 +16,9 @@ dist-ssr
 # rather than deleted outright — see todo.md
 /.abandoned-experiments
 
+# personal learning notes, not project documentation
+/learn/
+
 /CLAUDE.md
 /.claude/settings.json
 /.claude/skills/

@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/badge/rust-1.97+-c9a15c?style=flat-square&labelColor=0e1116&logo=rust&logoColor=e8e3d8" alt="Rust: 1.97+" />
     <img src="https://img.shields.io/badge/tauri-2.11.5-4f8f86?style=flat-square&labelColor=0e1116&logo=tauri&logoColor=e8e3d8" alt="Tauri: 2.11.5" />
     <img src="https://img.shields.io/badge/react-19.2-c9a15c?style=flat-square&labelColor=0e1116&logo=react&logoColor=e8e3d8" alt="React: 19.2" />
-    <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-4f8f86?style=flat-square&labelColor=0e1116" alt="Platforms: macOS, Linux, Windows" />
+    <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20iOS%20%7C%20Android-4f8f86?style=flat-square&labelColor=0e1116" alt="Platforms: macOS, Linux, Windows, iOS, Android" />
     <img src="https://img.shields.io/badge/encryption-Olm%20%2F%20Megolm-c9a15c?style=flat-square&labelColor=0e1116" alt="Encryption: Olm / Megolm" />
     <img src="https://img.shields.io/badge/server%20storage-none-4f8f86?style=flat-square&labelColor=0e1116" alt="Server-side message storage: none" />
   </p>
@@ -53,6 +53,7 @@ and how.
 - [4. Testing](#4-testing)
 - [5. Backend (directory server) setup](#5-backend-directory-server-setup)
 - [6. Using the app](#6-using-the-app)
+- [7. Mobile (iOS / Android)](#7-mobile-ios--android)
 
 ---
 
@@ -108,8 +109,15 @@ and how.
   zero effect on anyone you've talked to.
 - **Launch at login, if you want it** — on by default, a toggle away in
   Settings.
-- **One codebase, three platforms** — native windows on macOS, Windows, and
-  Linux, via [Tauri](https://tauri.app).
+- **One codebase, five platforms** — native windows on macOS, Windows, and
+  Linux, and native apps on iOS and Android, via [Tauri](https://tauri.app).
+  See [§7](#7-mobile-ios--android) for building the mobile targets.
+- **Add a phone to an existing account** — Settings → Devices shows a QR
+  code; scanning it from another device (mobile or desktop) signs it in as
+  the same account, no password or recovery phrase involved. Every device
+  is fully independent (its own keys, its own P2P connection) and pressing
+  "Sync" reconciles message history between two devices when both are
+  online.
 
 ## How it works
 
@@ -306,19 +314,30 @@ macOS and Linux; doesn't commit or push.
 The server-choice screen (§3) always shows three options: **Seal** (your
 own official network), **Custom server**, and a small **Local test server**
 link at the bottom. "Seal" is disabled (greyed out, with "Not set up in
-this build yet") until you bake in a URL at *build* time:
+this build yet") unless a URL is baked in at *build* time via the
+`SEAL_DEFAULT_DIRECTORY_URL` env var, read through `option_env!` in
+`apps/desktop/src-tauri/src/server_config.rs`.
+
+This repo's own `apps/desktop/src-tauri/.cargo/config.toml` already sets it
+to `https://seal.emn4tor.de` — the real server this project runs (see §5)
+— so `npm run tauri build`/`dev`/`ios build`/`ios dev` all pick "Seal" as a
+real, selectable option by default with no extra flags. Cargo only honors
+that file when its working directory is inside `src-tauri`, which is where
+the Tauri CLI always invokes `cargo build` from, so this doesn't affect
+`cargo test --workspace` run from the repo root.
+
+Forking this to run your own network instead: edit or delete that
+`.cargo/config.toml` file. To point at a different URL for one build
+without touching the file, an already-set env var wins over it:
 
 ```sh
 SEAL_DEFAULT_DIRECTORY_URL=https://directory.example.com npm run tauri build
 ```
 
-Once you've stood up your own server (§5) and have a real domain pointed at
-it, set this and rebuild: every copy you distribute from then on shows
-"Seal" as a real, selectable option using that URL, without touching any
-other code. Leave it unset for ordinary/dev builds: there's no official
-server hosted by this repo, so "Seal" stays disabled and people fall back to
-a custom server or the local one, rather than the app silently pointing at
-a placeholder domain that isn't actually running anything.
+Leave both unset for a generic template build with no official server
+baked in at all — "Seal" then stays disabled and people fall back to a
+custom server or the local one, rather than the app silently pointing at a
+domain that isn't actually running anything for your fork.
 
 ---
 
@@ -647,3 +666,142 @@ the whole point.
 6. **Delete everything**: Settings → Data & Privacy. This is instant,
    local-only, and irreversible: it destroys your keys, contacts, and
    history on *this device* and has no effect on anyone you've talked to.
+7. **Add a device (e.g. your phone)**: Settings → Devices → "Show QR code"
+   on the device you already have set up, then Devices → "Add a device" →
+   "Scan with camera" (or paste the code shown under the QR) on the new
+   one. The new device becomes a fully independent, fully verified device
+   of the same account — not a copy or a mirror — able to send and receive
+   messages on its own even while the first device is offline. It won't
+   have the first device's message history yet; press "Sync" next to it
+   (on either device) once both are online to reconcile that. There's no
+   way to remove a paired device yet (see
+   [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)), so only pair devices
+   you trust to keep.
+
+---
+
+## 7. Mobile (iOS / Android)
+
+There's no separate mobile app crate — `apps/desktop/src-tauri` targets iOS and Android too,
+via [Tauri's mobile support](https://v2.tauri.app/develop/#developing-your-mobile-application):
+one Rust backend, one React frontend, one `commands.rs`/`actor.rs` command layer, with
+platform differences handled by `#[cfg(...)]` in Rust and a handful of runtime checks in the
+frontend (see "What's different on mobile" below).
+
+### Extra prerequisites
+
+Everything in [§1](#1-prerequisites) still applies (Rust, Node.js), plus:
+
+<details>
+<summary><strong>iOS</strong></summary>
+
+- A Mac (Apple's tooling doesn't run anywhere else) with **Xcode** installed, plus its Command
+  Line Tools (`xcode-select --install`, same as §1's macOS setup).
+- The Rust iOS targets: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios`.
+- **CocoaPods**: `brew install cocoapods` (or `sudo gem install cocoapods`).
+- Running on the Simulator needs nothing else. Running on a **real device** needs a free Apple
+  ID signed into Xcode at minimum (Settings → Accounts) to self-sign a development build; an
+  actual paid Apple Developer Program membership is only needed to distribute one (TestFlight,
+  App Store), not to build and run one locally.
+
+</details>
+
+<details>
+<summary><strong>Android</strong></summary>
+
+- **Android Studio** (bundles the SDK) or a standalone SDK + command-line tools install.
+- The **NDK**, a specific version — install it via Android Studio's SDK Manager (SDK Tools tab
+  → "NDK (Side by side)") rather than "latest," since Tauri pins a version range; check
+  `npx tauri android init`'s output if it complains about the one you have.
+- A **JDK** (17+; Android Studio bundles one at `Android Studio.app/Contents/jbr` on macOS,
+  or `Android Studio/jbr` on Linux/Windows).
+- Environment variables Tauri's CLI needs to find all of the above — add to your shell profile:
+  ```sh
+  export ANDROID_HOME="$HOME/Library/Android/sdk"       # macOS; ~/Android/Sdk on Linux
+  export NDK_HOME="$ANDROID_HOME/ndk/<installed-version>"
+  export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"  # macOS
+  ```
+- The Rust Android targets: `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android`.
+- Running on the emulator needs nothing else (create one via Android Studio's Device Manager).
+  Running on a **real device** needs USB debugging enabled (Settings → About phone → tap "Build
+  number" 7 times → Developer options → USB debugging) and the device connected and authorized
+  (`adb devices` should list it).
+
+</details>
+
+### One-time setup
+
+`apps/desktop/src-tauri/gen/apple` is already checked into this repo (generated once,
+committed the way Tauri's own docs recommend for mobile projects — Xcode project files often
+need small manual edits over time, so regenerating from scratch on every clone would lose
+those). `gen/android` is **not** checked in yet; the first person to build for Android needs to
+generate it once:
+
+```sh
+cd apps/desktop
+npm install
+npx tauri android init
+```
+
+This reads `tauri.conf.json`'s `identifier` (`de.emn4tor.seal`) to derive the Android package
+name and Gradle project, and only needs to happen once per clone (`gen/android` isn't
+regenerated by `npm run tauri android dev`/`build` afterward — commit it once it exists, same
+as `gen/apple`).
+
+### Running in dev mode
+
+```sh
+cd apps/desktop
+
+npm run tauri ios dev        # prompts for a Simulator or a connected device
+npm run tauri android dev    # prompts for an emulator or a connected device
+```
+
+Same hot-reload dev loop as desktop (§3): Vite serves the frontend, the Rust backend compiles
+in debug mode, changes to `apps/desktop/src` hot-reload in place. First run per platform is
+slow (a full native project build, on top of the usual first Rust compile); subsequent runs
+are much faster. `npm run tauri`'s dev-server port-picker wrapper (§3, `scripts/tauri.mjs`)
+only special-cases the plain `dev` subcommand — `ios dev`/`android dev` pass straight through
+to the real Tauri CLI unmodified, so running one alongside a desktop `npm run tauri dev`
+instance at the same time works without conflict.
+
+### Building a real IPA / APK
+
+```sh
+npm run tauri ios build
+npm run tauri android build
+```
+
+Produces an unsigned (or debug-signed) build under `gen/apple`/`gen/android`'s own build
+output directories. Getting a real, distributable, signed build (a provisioning
+profile + distribution certificate for iOS; a release keystore for Android) is a one-time
+per-publisher setup this repo deliberately doesn't bake in — see
+[Tauri's iOS](https://v2.tauri.app/distribute/app-store/) and
+[Android](https://v2.tauri.app/distribute/google-play/) distribution docs.
+
+### What's different on mobile
+
+A handful of desktop-only concepts are `#[cfg]`-gated out of the mobile build rather than
+compiled in as silent no-ops (`apps/desktop/src-tauri/src/lib.rs`):
+
+- **No tray icon, no launch-at-login, no self-updater.** Mobile app updates go through the App
+  Store / Play Store, not `tauri-plugin-updater`; there's no tray on a phone; "launch at login"
+  isn't a concept mobile OSes expose to apps.
+- **Push-to-talk is currently absent, not degraded.** Desktop push-to-talk is a real OS-level
+  global keyboard shortcut (`tauri-plugin-global-shortcut`), which mobile has no equivalent
+  API for. An on-screen hold-to-talk control is the intended mobile replacement but isn't
+  built yet — voice calls on mobile currently need the always-on mic threshold instead of
+  push-to-talk.
+- **Voice call audio quality/latency on mobile is unverified.** The voice pipeline
+  (`crates/core/src/voice.rs`) is pure [`cpal`](https://github.com/RustAudio/cpal), which does
+  have Android (AAudio) and iOS (AudioUnit) backends, but nothing in this codebase has been
+  tested against them yet — treat mobile voice calls as unproven until someone has.
+- **The QR-pairing camera scanner is mobile-only** (`@tauri-apps/plugin-barcode-scanner` has no
+  desktop implementation upstream). The *joining* side's screen ("Join with a QR code," off
+  the account picker or first-run screen) offers both a "Scan with camera" button and a paste
+  fallback; the scan button only actually works on iOS/Android. On desktop — or if you'd
+  rather not point a camera at a screen — use the paste fallback with the copyable text code
+  shown under the QR on the inviting device (Settings → Devices → "Add a device"; see §6,
+  step 7).
+
+---

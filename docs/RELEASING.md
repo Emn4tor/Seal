@@ -45,9 +45,11 @@ git push origin v0.2.0
 
 ## 3. What the workflow does
 
-Pushing the tag runs `publish-tauri` across three runners in parallel (macOS, Ubuntu, Windows), each building its own bundle formats (`dmg`+`app`, `appimage`+`deb`, `nsis`+`msi`) and uploading them as assets on a single **draft** GitHub Release for that tag.
+Pushing the tag runs `publish-tauri` across three runners in parallel (macOS, Ubuntu, Windows), each building its own bundle formats (`dmg`+`app`, `appimage`+`deb`, `nsis`+`msi`) and uploading them as assets on a single **draft** GitHub Release for that tag. Once that finishes, `publish-android` and `publish-ios` build the mobile targets and upload to the same release — see §6 for what each actually produces today.
 
 Since it's a draft, nothing is public yet: go to the repo's Releases page, review the generated notes and attached artifacts, edit anything that needs it, and publish it manually when it's ready.
+
+The workflow also runs on-demand from the Actions tab (`workflow_dispatch`), with no tag push required — the easiest way to test a change to this pipeline, especially the mobile jobs, which nothing else exercises.
 
 ## 4. The macOS "is damaged and can't be opened" message
 
@@ -75,5 +77,29 @@ Proper code signing + notarization removes the warning entirely. `tauri-action` 
 - `APPLE_TEAM_ID`, the Apple Developer Team ID
 
 Once those are wired up, `signingIdentity` in `tauri.conf.json` should be changed from `"-"` to the real `APPLE_SIGNING_IDENTITY` value (Tauri accepts the identity from either the config or the env var, not both at once, so pick one and drop the other), and the `releaseBody` note in `release.yml` covering this issue can be deleted.
+
+## 6. Mobile builds (`publish-android`/`publish-ios`)
+
+Both run after `publish-tauri` and upload to the same draft release it created, with filenames that spell out the platform (`Seal-{version}-android-arm64.apk`, `Seal-{version}-iOS.ipa`) — unlike the desktop artifacts above, which keep whatever names `tauri-action` gives them, since those have to stay consistent with what `latest.json` (the auto-updater manifest) expects. Mobile has no such constraint: `tauri-plugin-updater` isn't compiled in on iOS/Android at all.
+
+Android's Rust/Gradle project (`src-tauri/gen/android`) isn't committed to the repo the way iOS's (`src-tauri/gen/apple`) is — the workflow runs `tauri android init` fresh every time instead, so there's no generated Android Studio project to go stale.
+
+### Android release signing
+
+Without a configured keystore, `publish-android` builds a **debug-signed** APK: fine for sideloading and testing, not something to hand out as a real release (every debug build shares the same well-known debug key, so it isn't meaningfully signed by *this project*). To get a real release-signed APK, add these secrets:
+
+- `ANDROID_KEYSTORE_BASE64`, a release keystore (`keytool -genkeypair -v -keystore release.keystore -alias seal -keyalg RSA -keysize 2048 -validity 10000`), base64-encoded
+- `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` for that keystore
+
+No Google Play developer account needed for this part — a self-signed release keystore is enough for anyone to install the APK directly. **Keep the keystore file itself somewhere safe outside git**: losing it means every future release has to switch to a new signing key, which Android treats as a different app for update purposes.
+
+### iOS: no signed IPA yet
+
+`publish-ios` builds and archives with `--no-sign --archive-only`, which validates the Rust/Xcode build on every release but can't produce an installable `.ipa` — iOS requires a real Apple-issued certificate and provisioning profile to sign *anything* installable, with no ad-hoc equivalent to Android's self-signed keystore. That needs the same paid Apple Developer Program membership as macOS notarization (§5). Once that exists:
+
+- Export a Distribution certificate as a base64-encoded `.p12` and add it (plus its password) as secrets, imported into a temporary keychain at the start of the job (`security create-keychain`/`security import`, the standard pattern `tauri-action` itself uses for macOS)
+- Add the matching provisioning profile as a secret, installed into `~/Library/MobileDevice/Provisioning Profiles/`
+- Point `apps/desktop/src-tauri/gen/apple/ExportOptions.plist` at the real team/signing identity instead of automatic personal-team signing
+- Drop `--no-sign`, add `--export-method release-testing` (TestFlight) or `--export-method app-store-connect`, and add an upload step after the build — `publish-android`'s `gh release upload` step above is the template for uploading to the same draft release
 
 This file was augmented/rephrased by Claude Codea

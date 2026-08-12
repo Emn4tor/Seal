@@ -12,6 +12,22 @@ Local-storage encryption is XChaCha20-Poly1305 (`storage::crypto`, via RustCrypt
 `chacha20poly1305`) keyed by a random 256-bit key held in the OS keychain, not a
 password-derived key: there's no KDF to attack because there's no password.
 
+## Multi-device / pairing
+
+Each device has its own Olm identity (`ChatNode::device_identity`) and its own
+`DeviceCertificate`, signed by the account's master key and verified both server-side
+(`directory-server::routes::devices::register_device`, the one narrow exception to the
+directory's crypto-blindness — see `THREAT_MODEL.md`) and client-side
+(`identity::Identity::verify`, in `AppService::add_contact_by_user_id`) before either side
+trusts it. QR pairing (`crates/net/src/pairing_protocol.rs`) additionally transmits the
+account's master private key itself to the joining device — not just a device cert — wrapped
+in an ephemeral-X25519-ECDH-derived XChaCha20-Poly1305 layer on top of the Noise-encrypted
+transport, gated by a single-use token expiring after 120s
+(`net::PAIRING_TOKEN_TTL_SECS`). **This is a real, deliberate deviation** from the safer
+device-cert-only design, with real consequences (no device revocation, any paired device can
+mint further devices) — see `THREAT_MODEL.md`'s "known limitations" for the full reasoning
+and blast-radius discussion before touching this code path.
+
 ## Logging
 
 Every `tracing::*!` call site in the workspace has been reviewed by hand (there are ~16 of

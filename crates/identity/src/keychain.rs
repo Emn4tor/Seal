@@ -10,23 +10,17 @@ use crate::error::IdentityError;
 const SERVICE: &str = "p2p-chat";
 const KEK_USERNAME: &str = "local-encryption-key";
 
-/// Holds the single key-encryption-key (KEK) used to encrypt sensitive
-/// columns in the local database (identity/session pickles, message
-/// bodies, see `storage::crypto`; the database file itself is plain
-/// SQLite, not whole-file-encrypted), stored in the OS keychain rather
-/// than on disk. Deleting it is what makes the local panic-purge instant
-/// and irrecoverable: without it, every one of those columns is
-/// permanently unreadable ciphertext, regardless of whether the file
-/// itself is ever deleted.
-///
-/// On macOS this is backed by `keychain::macos`, gated behind Touch ID
-/// (falling back to the device password); everywhere else it's the plain
-/// cross-platform `keyring` crate, unbiometric. See that module's doc
-/// comment for why macOS gets its own path instead of going through
-/// `keyring` like the others.
+/// The key-encryption-key (KEK) that protects sensitive local database
+/// columns, stored in the OS keychain. Deleting it makes panic-purge
+/// instant: the ciphertext it protected becomes permanently unreadable.
 pub struct Keychain {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(not(target_os = "macos"), not(target_os = "ios")))]
     entry: keyring::Entry,
+    // `keyring::Entry` (the `v1` wrapper) hardcodes NoDefaultStore on iOS
+    // regardless of what `ensure_ios_credential_store` registers below —
+    // `keyring_core::Entry` has no such gate.
+    #[cfg(target_os = "ios")]
+    entry: keyring_core::Entry,
     #[cfg(target_os = "macos")]
     service: String,
     #[cfg(target_os = "macos")]
@@ -34,26 +28,25 @@ pub struct Keychain {
 }
 
 impl Keychain {
-    /// The app's real KEK entry, scoped to a specific app-data directory
-    /// rather than one process-wide fixed name. In normal use there's
-    /// exactly one data directory per OS user account, so this behaves
-    /// like a single stable per-device identity — restarting the app with
-    /// the same data dir reliably finds the same KEK. It also means
-    /// multiple independent instances (e.g. two `AppService`s in the same
-    /// test process, each with their own temp data dir) never collide on
-    /// one keychain entry, which would otherwise mean two different local
-    /// identities decrypting their local databases with the *same* key.
+    /// Scoped to a data dir's hash so multiple local `AppService`s (e.g. in
+    /// tests) never collide on one keychain entry.
     pub fn for_app_data_dir(data_dir: &std::path::Path) -> Result<Self, IdentityError> {
         let digest = Sha256::digest(data_dir.to_string_lossy().as_bytes());
         let username = format!("{KEK_USERNAME}-{}", hex::encode(&digest[..8]));
         Self::new(SERVICE, &username)
     }
 
-    /// Opens an arbitrary keychain entry — used directly by tests so they
-    /// exercise the real OS keychain without touching the app's actual KEK.
-    #[cfg(not(target_os = "macos"))]
+    /// Also used directly by tests, against a throwaway service name.
+    #[cfg(all(not(target_os = "macos"), not(target_os = "ios")))]
     pub fn new(service: &str, username: &str) -> Result<Self, IdentityError> {
         let entry = keyring::Entry::new(service, username)?;
+        Ok(Self { entry })
+    }
+
+    #[cfg(target_os = "ios")]
+    pub fn new(service: &str, username: &str) -> Result<Self, IdentityError> {
+        ensure_ios_credential_store();
+        let entry = keyring_core::Entry::new(service, username)?;
         Ok(Self { entry })
     }
 
@@ -65,11 +58,8 @@ impl Keychain {
         })
     }
 
-    /// Returns the existing KEK, or generates and stores a new random one on
-    /// first run. On macOS, reading (or, on first run, the OS confirming
-    /// the newly-created item's protection) prompts for Touch ID/password —
-    /// this is a blocking, interactive OS call, so callers on an async
-    /// runtime should run it via `spawn_blocking` rather than inline.
+    /// Returns the existing KEK, or mints one on first run. On macOS this
+    /// can block on a Touch ID/password prompt — run via `spawn_blocking`.
     #[cfg(not(target_os = "macos"))]
     pub fn load_or_create_kek(&self) -> Result<[u8; 32], IdentityError> {
         match self.entry.get_password() {
@@ -101,9 +91,7 @@ impl Keychain {
         }
     }
 
-    /// Crypto-shred: irrecoverably deletes the KEK. Idempotent — deleting an
-    /// already-absent entry is not an error, since purge should never fail
-    /// just because it (or part of it) already ran.
+    /// Crypto-shred. Idempotent: deleting an absent entry isn't an error.
     #[cfg(not(target_os = "macos"))]
     pub fn delete_kek(&self) -> Result<(), IdentityError> {
         match self.entry.delete_credential() {
@@ -120,14 +108,22 @@ impl Keychain {
     }
 }
 
-/// The macOS-specific keychain backend, used instead of the cross-platform
-/// `keyring` crate. `keyring`'s macOS store goes through the legacy,
-/// deprecated `SecKeychainAddGenericPassword` API, which has no way to
-/// attach a `SecAccessControl` — there's no path to Touch ID through it.
-/// This uses `security-framework`'s modern `SecItemAdd`/`SecItemCopyMatching`
-/// wrappers instead (the same "regular login keychain" as `keyring`, not
-/// the sandboxed "Protected Data" store — that one needs an entitlement and
-/// provisioning profile this app doesn't have).
+/// Registers iOS's "Protected Data" store as `keyring_core`'s default,
+/// once per process. Without this every `keyring_core::Entry::new` fails
+/// with NoDefaultStore.
+#[cfg(target_os = "ios")]
+fn ensure_ios_credential_store() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        if let Ok(store) = apple_native_keyring_store::protected::Store::new() {
+            keyring_core::set_default_store(store);
+        }
+    });
+}
+
+/// Uses `security-framework` directly instead of `keyring`, whose macOS
+/// backend can't attach a `SecAccessControl` (no Touch ID gating).
 #[cfg(target_os = "macos")]
 mod macos {
     use security_framework::base::Error;
@@ -137,16 +133,9 @@ mod macos {
     };
     use security_framework_sys::base::errSecItemNotFound;
 
-    /// Apple's SecBase.h `errSecInvalidOwnerEdit` — "Invalid attempt to
-    /// change the owner of this item." Hit when deleting a keychain item
-    /// created by a different code identity than the one deleting it now:
-    /// the common case being an unsigned dev build, where every rebuild
-    /// changes the binary's hash. There's no way to force it short of a
-    /// consistently signed build, so purge treats this the same as
-    /// "already gone" — the encrypted database this key protects is being
-    /// deleted right alongside it (see `storage::panic_purge`), so purge
-    /// should never fail just because the OS wouldn't let this one step
-    /// complete.
+    /// errSecInvalidOwnerEdit: deleting an item created under a different
+    /// code signature (e.g. every unsigned dev rebuild). Treated as
+    /// already-gone since purge shouldn't fail over this.
     const ERR_SEC_INVALID_OWNER_EDIT: i32 = -25244;
 
     pub fn get(service: &str, account: &str) -> Result<Option<Vec<u8>>, Error> {
@@ -157,29 +146,24 @@ mod macos {
         }
     }
 
-    /// Apple's SecBase.h `errSecMissingEntitlement` — not in this crate's
-    /// (small, curated) constant list, so hardcoded here. Hit when the
-    /// calling binary isn't signed with an identity the OS trusts enough to
-    /// grant `SecAccessControl` — i.e. any unsigned build, which is this
-    /// repo's default (`scripts/build-mac-dmg.sh`'s build is unsigned
-    /// unless you configure your own signing identity; a plain `cargo
-    /// build`/`cargo tauri dev` binary is never signed at all).
+    /// errSecMissingEntitlement: an unsigned binary can't get
+    /// `SecAccessControl` at all (this repo's default build).
     const ERR_SEC_MISSING_ENTITLEMENT: i32 = -34018;
+
+    /// errSecAuthFailed: the other error code macOS uses for the same
+    /// unsigned-binary problem, seen to vary by OS version.
+    const ERR_SEC_AUTH_FAILED: i32 = -25293;
 
     pub fn set(service: &str, account: &str, secret: &[u8]) -> Result<(), Error> {
         let mut options = PasswordOptions::new_generic_password(service, account);
-        // Touch ID when available, falling back to the device login
-        // password (`USER_PRESENCE`, not `BIOMETRY_*` alone) — this app
-        // needs to keep working on Macs with no biometric hardware at all,
-        // not just ones with Touch ID.
+        // USER_PRESENCE covers Touch ID and password-only Macs alike.
         options.set_access_control_options(AccessControlOptions::USER_PRESENCE);
         match set_generic_password_options(secret, options) {
-            // Falls back to an unprotected item rather than making account
-            // creation/login fail outright on an unsigned build — keeps
-            // dev builds working exactly as they did before Touch ID
-            // protection existed. Once the app is properly code-signed,
-            // this stops triggering and the KEK gets the real gate.
-            Err(e) if e.code() == ERR_SEC_MISSING_ENTITLEMENT => {
+            // Falls back to an unprotected item on unsigned builds rather
+            // than failing account creation outright.
+            Err(e)
+                if e.code() == ERR_SEC_MISSING_ENTITLEMENT || e.code() == ERR_SEC_AUTH_FAILED =>
+            {
                 let options = PasswordOptions::new_generic_password(service, account);
                 set_generic_password_options(secret, options)
             }
@@ -213,9 +197,7 @@ fn decode_kek(b64: &str) -> Result<[u8; 32], IdentityError> {
     Ok(arr)
 }
 
-/// Best-effort scrub of a KEK buffer once it's no longer needed (e.g. after
-/// handing it to `storage::LocalStore::open`). Not a substitute for
-/// deleting the keychain entry itself.
+/// Best-effort scrub after use. Not a substitute for deleting the entry.
 pub fn zeroize_kek(kek: &mut [u8; 32]) {
     kek.zeroize();
 }

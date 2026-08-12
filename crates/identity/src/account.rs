@@ -57,6 +57,33 @@ impl Identity {
     pub fn sign(&self, message: &[u8]) -> String {
         STANDARD.encode(self.account.sign(message).to_bytes())
     }
+
+    /// Client-side counterpart to `sign`. Takes standard-base64 for both
+    /// arguments, matching `sign`'s encoding — *not* vodozemac's own
+    /// unpadded `to_base64()`, which silently fails to decode if mixed.
+    pub fn verify(
+        pubkey_b64: &str,
+        message: &[u8],
+        signature_b64: &str,
+    ) -> Result<(), IdentityError> {
+        let pubkey_bytes: [u8; 32] = STANDARD
+            .decode(pubkey_b64)
+            .map_err(|e| IdentityError::InvalidKeyMaterial(e.to_string()))?
+            .try_into()
+            .map_err(|_| {
+                IdentityError::InvalidKeyMaterial("ed25519 key must be 32 bytes".into())
+            })?;
+        let sig_bytes = STANDARD
+            .decode(signature_b64)
+            .map_err(|e| IdentityError::InvalidKeyMaterial(e.to_string()))?;
+        let pubkey = vodozemac::Ed25519PublicKey::from_slice(&pubkey_bytes)
+            .map_err(|e| IdentityError::InvalidKeyMaterial(e.to_string()))?;
+        let sig = vodozemac::Ed25519Signature::from_slice(&sig_bytes)
+            .map_err(|e| IdentityError::InvalidKeyMaterial(e.to_string()))?;
+        pubkey
+            .verify(message, &sig)
+            .map_err(|e| IdentityError::InvalidKeyMaterial(e.to_string()))
+    }
 }
 
 impl Identity {

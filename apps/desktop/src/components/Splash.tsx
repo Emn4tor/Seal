@@ -62,7 +62,7 @@ export function Splash({ onFinished }: SplashProps) {
   }, []);
 
   return (
-    <div className="flex h-screen items-center justify-center bg-ink">
+    <div className="flex h-full items-center justify-center bg-ink">
       <video
         ref={videoRef}
         src={splashSrc}

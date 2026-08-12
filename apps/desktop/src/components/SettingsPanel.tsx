@@ -37,16 +37,18 @@ import { getRingtoneId, saveRingtoneId } from "../lib/ringtoneSettings";
 import { RINGTONES, type RingtoneHandle, type RingtoneId, previewRingtone } from "../lib/ringtones";
 import { getUpdateAutoCheckEnabled, getUpdateAutoInstallEnabled, saveUpdateAutoCheckEnabled, saveUpdateAutoInstallEnabled } from "../lib/updaterSettings";
 import { ToastItem } from "./ToastStack";
+import { Devices } from "./Devices";
 
 interface SettingsPanelProps {
   userId: string;
   displayName: string;
   onRename: (name: string) => Promise<void>;
   networkStatus: NetworkStatus;
-  /** The raw saved choice ("embedded", or a real URL) — not a resolved,
-   * always-connectable URL. See `App.tsx`'s state comment for why this
-   * distinction matters for the edit/re-save flow below. */
-  savedServerChoice: string | null;
+  /** The active account's own directory server — the raw choice
+   * ("embedded", or a real URL), independent of every other account on
+   * this device. */
+  directoryUrl: string | null;
+  onChangeDirectoryServer: (serverUrl: string) => Promise<void>;
   onClose: () => void;
   onPurge: () => Promise<void>;
   onOpenTutorial: () => void;
@@ -57,6 +59,7 @@ interface SettingsPanelProps {
   onRemoveCurrentAccount: () => Promise<void>;
   setOpenModal: React.Dispatch<React.SetStateAction<OpenModal>>;
   notify: (title: string, body: string, opts: { variant?: ToastItem["variant"]; focused?: boolean; groupId?: string }) => void;
+  isMobile: boolean;
 }
 
 const CONFIRM_PHRASE = "DELETE EVERYTHING";
@@ -76,10 +79,11 @@ const NETWORK_COPY: Record<NetworkStatus, { label: string; body: string }> = {
   },
 };
 
-type Tab = "account" | "notifications" | "voice" | "advanced" | "privacy";
+type Tab = "account" | "devices" | "notifications" | "voice" | "advanced" | "privacy";
 
 const TABS: { id: Tab; label: string; icon: (props: { className?: string }) => ReactElement }[] = [
   { id: "account", label: "Account", icon: AccountIcon },
+  { id: "devices", label: "Devices", icon: DeviceIcon },
   { id: "notifications", label: "Notifications", icon: BellIcon },
   { id: "voice", label: "Voice & Audio", icon: MicIcon },
   { id: "advanced", label: "Advanced", icon: SlidersIcon },
@@ -91,6 +95,17 @@ function AccountIcon({ className }: { className?: string }) {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className={className}>
       <circle cx="12" cy="8" r="3.4" stroke="currentColor" strokeWidth="1.5" />
       <path d="M5 20c1.2-4 4-6 7-6s5.8 2 7 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function DeviceIcon({ className }: { className?: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className={className}>
+      <rect x="6" y="2.5" width="8" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M9.5 13.5h1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <rect x="14.5" y="10" width="7" height="11.5" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M17.3 19h1.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }
@@ -186,7 +201,8 @@ export function SettingsPanel({
   displayName,
   onRename,
   networkStatus,
-  savedServerChoice,
+  directoryUrl,
+  onChangeDirectoryServer,
   onClose,
   onPurge,
   onOpenTutorial,
@@ -196,9 +212,18 @@ export function SettingsPanel({
   onAddAnotherAccount,
   onRemoveCurrentAccount,
   setOpenModal,
-  notify
+  notify,
+  isMobile,
 }: SettingsPanelProps) {
   const [tab, setTab] = useState<Tab>("account");
+  // Below `md`, tapping a tab pushes its content over the list with a
+  // back arrow, like a phone's own Settings app. Unchanged above `md`.
+  const [mobileShowingList, setMobileShowingList] = useState(true);
+
+  function selectTab(id: Tab) {
+    setTab(id);
+    setMobileShowingList(false);
+  }
 
   const [confirmText, setConfirmText] = useState("");
   const [purging, setPurging] = useState(false);
@@ -409,7 +434,7 @@ export function SettingsPanel({
     if (!value) return;
     setServerSaveError(null);
     try {
-      await api.saveServerUrlForNextLaunch(value);
+      await onChangeDirectoryServer(value);
       setServerSaved(true);
       setEditingServer(false);
     } catch (err) {
@@ -491,15 +516,28 @@ export function SettingsPanel({
   return (
     <div className="fixed inset-0 z-50 flex bg-ink">
       <div className="flex w-full">
-        <div className="flex w-56 shrink-0 flex-col border-r border-border bg-surface/40 px-3 py-6">
-          <h1 className="mb-6 px-2 font-display text-xl font-semibold text-text">Settings</h1>
+        <div
+          className={`${mobileShowingList ? "flex" : "hidden"} w-full shrink-0 flex-col border-r border-border bg-surface/40 px-3 py-6 md:flex md:w-56`}
+        >
+          <div className="mb-6 flex items-center justify-between px-2">
+            <h1 className="font-display text-xl font-semibold text-text">Settings</h1>
+            <button
+              onClick={onClose}
+              aria-label="Close settings"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-text-muted hover:bg-surface-raised hover:text-text active:scale-90 md:hidden"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
           <nav className="flex flex-col gap-0.5">
             {TABS.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
-                onClick={() => setTab(id)}
+                onClick={() => selectTab(id)}
                 aria-current={tab === id}
-                className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium transition-all ${
+                className={`flex items-center gap-2.5 rounded-md px-3 py-2.5 text-left text-sm font-medium transition-all md:py-2 ${
                   tab === id ? "bg-brass-wash text-brass" : "text-text-muted hover:bg-surface-raised hover:text-text"
                 }`}
               >
@@ -507,20 +545,37 @@ export function SettingsPanel({
                 {label}
               </button>
             ))}
-            <button
-              className="flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm font-medium transition-all text-text-muted hover:bg-green-600/10 hover:text-text active:scale-98"
-              onClick={() => checkUpdates()}
-            >
-              <UpdateIcon className="shrink-0" />
-              Check for Updates
-            </button>
+            {!isMobile && (
+              <button
+                className="flex items-center gap-2.5 rounded-md px-3 py-2.5 text-left text-sm font-medium transition-all text-text-muted hover:bg-green-600/10 hover:text-text active:scale-98 md:py-2"
+                onClick={() => checkUpdates()}
+              >
+                <UpdateIcon className="shrink-0" />
+                Check for Updates
+              </button>
+            )}
           </nav>
           <p className="flex-1"></p>
           <p className="text-xs px-2 text-text-muted">version: {appVersion}</p>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-10">
+        <div className={`${mobileShowingList ? "hidden" : "flex"} min-h-0 flex-1 flex-col overflow-y-auto md:flex`}>
+          <div className="flex items-center gap-2 border-b border-border px-4 py-3 md:hidden">
+            <button
+              onClick={() => setMobileShowingList(true)}
+              aria-label="Back to settings list"
+              className="-ml-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted hover:bg-surface-raised hover:text-text active:scale-90"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <span className="font-display text-[15px] font-semibold text-text">
+              {TABS.find((t) => t.id === tab)?.label}
+            </span>
+          </div>
+
+          <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-5 py-6 md:px-8 md:py-10">
             <div className="flex items-center justify-end">
               <button
                 onClick={onClose}
@@ -664,6 +719,8 @@ export function SettingsPanel({
                 </Section>
               </>
             )}
+
+            {tab === "devices" && <Devices />}
 
             {tab === "notifications" && (
               <>
@@ -885,21 +942,22 @@ export function SettingsPanel({
               <>
                 <Section title="Directory server">
                   <p className="mt-3 text-sm text-text-muted">
-                    The one server Seal talks to, for finding people by ID. Anyone can run one: see{" "}
+                    The one server this account talks to, for finding people by ID. Each account on
+                    this device can use a different one — see{" "}
                     <code className="font-mono text-text">scripts/setup-backend.sh</code> in the project
                     if you want to host your own.
                   </p>
                   <div className="mt-3 flex items-center gap-2 rounded-md border border-border bg-ink px-3 py-2">
                     <code className="flex-1 truncate font-mono text-[13px] text-text">
-                      {savedServerChoice === EMBEDDED_SERVER_SENTINEL
+                      {directoryUrl === EMBEDDED_SERVER_SENTINEL
                         ? "Local test server (runs on this device)"
-                        : (savedServerChoice ?? "Unknown")}
+                        : (directoryUrl ?? "Unknown")}
                     </code>
                     {!editingServer && (
                       <button
                         onClick={() => {
                           setServerInput(
-                            savedServerChoice === EMBEDDED_SERVER_SENTINEL ? "" : (savedServerChoice ?? ""),
+                            directoryUrl === EMBEDDED_SERVER_SENTINEL ? "" : (directoryUrl ?? ""),
                           );
                           setServerSaved(false);
                           setEditingServer(true);
@@ -938,46 +996,50 @@ export function SettingsPanel({
                     </div>
                   )}
                   {serverSaved && (
-                    <p className="mt-2.5 text-xs text-brass">Saved, restart Seal for this to take effect.</p>
+                    <p className="mt-2.5 text-xs text-brass">Saved, takes effect next time you sign in to this account.</p>
                   )}
                 </Section>
 
-                <Section title="Startup">
-                  <div className="mt-4 flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium text-text">Launch Seal at login</p>
-                      <p className="mt-1 text-xs text-text-muted">
-                        Starts automatically when you log into this device.
-                      </p>
+                {!isMobile && (
+                  <Section title="Startup">
+                    <div className="mt-4 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-text">Launch Seal at login</p>
+                        <p className="mt-1 text-xs text-text-muted">
+                          Starts automatically when you log into this device.
+                        </p>
+                      </div>
+                      <Toggle on={autostartEnabled} onClick={handleToggleAutostart} />
                     </div>
-                    <Toggle on={autostartEnabled} onClick={handleToggleAutostart} />
-                  </div>
-                </Section>
+                  </Section>
+                )}
 
-                <Section title="Updates">
-                  <div className="mt-4 flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium text-text">Check For Updates on Startup</p>
-                      <p className="mt-1 text-xs text-text-muted">
-                        Automatically check for updates on startup.
-                      </p>
+                {!isMobile && (
+                  <Section title="Updates">
+                    <div className="mt-4 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-text">Check For Updates on Startup</p>
+                        <p className="mt-1 text-xs text-text-muted">
+                          Automatically check for updates on startup.
+                        </p>
+                      </div>
+                      <Toggle on={autoCheckUpdates} onClick={handleToggleUpdateAutoCheck} />
                     </div>
-                    <Toggle on={autoCheckUpdates} onClick={handleToggleUpdateAutoCheck} />
-                  </div>
-                  <div className={"mt-4 flex items-center justify-between gap-3" + (autoCheckUpdates ? "" : " opacity-40") }>
-                    <div>
-                      <p className="text-sm font-medium text-text">Update on Startup</p>
-                      <p className="mt-1 text-xs text-text-muted">
-                        Automatically download and install updates on startup.
-                      </p>
+                    <div className={"mt-4 flex items-center justify-between gap-3" + (autoCheckUpdates ? "" : " opacity-40") }>
+                      <div>
+                        <p className="text-sm font-medium text-text">Update on Startup</p>
+                        <p className="mt-1 text-xs text-text-muted">
+                          Automatically download and install updates on startup.
+                        </p>
+                      </div>
+                      <Toggle
+                        on={autoInstallUpdates}
+                        onClick={handleToggleUpdateAutoInstall}
+                        disabled={!autoCheckUpdates}
+                      />
                     </div>
-                    <Toggle
-                      on={autoInstallUpdates}
-                      onClick={handleToggleUpdateAutoInstall}
-                      disabled={!autoCheckUpdates}
-                    />
-                  </div>
-                </Section>
+                  </Section>
+                )}
 
                 <Section title="Network">
                   <div className="mt-3 flex items-center gap-2">

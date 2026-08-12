@@ -7,9 +7,17 @@ interface AccountPickerProps {
   error: string | null;
   onChoose: (account: AccountSummary) => void;
   onAddAnother: () => void;
+  onJoinViaPairing: () => void;
 }
 
-export function AccountPicker({ accounts, busy, error, onChoose, onAddAnother }: AccountPickerProps) {
+export function AccountPicker({
+  accounts,
+  busy,
+  error,
+  onChoose,
+  onAddAnother,
+  onJoinViaPairing,
+}: AccountPickerProps) {
   return (
     <div className="flex h-full items-center justify-center bg-ink px-6">
       <div className="w-full max-w-md">
@@ -50,6 +58,13 @@ export function AccountPicker({ accounts, busy, error, onChoose, onAddAnother }:
           className="mt-4 w-full rounded-md border border-border px-4 py-2.5 text-[15px] font-medium text-brass transition enabled:hover:-translate-y-px enabled:hover:border-brass-dim enabled:hover:bg-brass-wash disabled:cursor-not-allowed disabled:opacity-40"
         >
           Add another account
+        </button>
+        <button
+          onClick={onJoinViaPairing}
+          disabled={busy}
+          className="mt-2 w-full rounded-md py-2 text-sm text-text-muted hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Or join with a QR code
         </button>
       </div>
     </div>

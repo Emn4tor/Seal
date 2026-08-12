@@ -7,9 +7,11 @@ import type {
   ChannelKind,
   ChatEvent,
   Contact,
+  Device,
   ExifField,
   Group,
   Message,
+  PairingOffer,
 } from "./types";
 
 /** Mirrors `server_config::EMBEDDED_SENTINEL` on the Rust side. */
@@ -22,19 +24,23 @@ export interface AccountsState {
 
 export const api = {
   getOfficialServerUrl: () => invoke<string | null>("get_official_server_url"),
-  getSavedServerUrl: () => invoke<string | null>("get_saved_server_url"),
-  startBackend: (serverUrl: string) => invoke<string>("start_backend", { serverUrl }),
-  saveServerUrlForNextLaunch: (serverUrl: string) =>
-    invoke<void>("save_server_url_for_next_launch", { serverUrl }),
+  isMobile: () => invoke<boolean>("is_mobile"),
   resolveBootAccount: () => invoke<BootDecision>("resolve_boot_account"),
   listAccounts: () => invoke<AccountsState>("list_accounts"),
   createAccount: (serverUrl: string, displayName: string) =>
     invoke<AccountSummary>("create_account", { serverUrl, displayName }),
-  resumeAccount: (serverUrl: string, accountId: string) =>
-    invoke<AccountSummary>("resume_account", { serverUrl, accountId }),
+  resumeAccount: (accountId: string) => invoke<AccountSummary>("resume_account", { accountId }),
+  setAccountDirectoryServer: (accountId: string, serverUrl: string) =>
+    invoke<void>("set_account_directory_server", { accountId, serverUrl }),
+  joinViaPairing: (serverUrl: string, offer: PairingOffer) =>
+    invoke<AccountSummary>("join_via_pairing", { serverUrl, offer }),
   renameAccount: (newDisplayName: string) =>
     invoke<void>("rename_account", { newDisplayName }),
   removeAccount: (accountId: string) => invoke<void>("remove_account", { accountId }),
+  startPairing: () => invoke<PairingOffer>("start_pairing"),
+  listMyDevices: () => invoke<Device[]>("list_my_devices"),
+  syncWithDevice: (peerDeviceId: string) =>
+    invoke<void>("sync_with_device", { peerDeviceId }),
   addContact: (userId: string) => invoke<void>("add_contact", { userId }),
   removeContact: (userId: string) => invoke<void>("remove_contact", { userId }),
   blockContact: (userId: string) => invoke<void>("block_contact", { userId }),

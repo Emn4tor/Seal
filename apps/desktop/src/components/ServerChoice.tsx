@@ -4,11 +4,15 @@ import { CipherSeal } from "./CipherSeal";
 
 interface ServerChoiceProps {
   onChosen: (serverUrl: string) => Promise<void>;
+  /** Omitted on the very first account on a device — there's nowhere to
+   * go back to yet. Present for "add another account" and "join via
+   * pairing", which both reach this screen from somewhere real. */
+  onCancel?: () => void;
 }
 
 type Mode = "seal" | "custom" | "local";
 
-export function ServerChoice({ onChosen }: ServerChoiceProps) {
+export function ServerChoice({ onChosen, onCancel }: ServerChoiceProps) {
   // `undefined` while loading, `null` once loaded if no official server is
   // configured in this build (see README — `SEAL_DEFAULT_DIRECTORY_URL`).
   const [officialUrl, setOfficialUrl] = useState<string | null | undefined>(undefined);
@@ -26,21 +30,28 @@ export function ServerChoice({ onChosen }: ServerChoiceProps) {
 
   const sealConfigured = Boolean(officialUrl);
 
+  // Typing a bare host like "directory.example.com" shouldn't be treated
+  // as invalid just because the scheme was left off.
+  function normalizeCustomUrl(raw: string): string {
+    return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  }
+
   async function handleContinue() {
     const chosen =
-      mode === "seal" ? officialUrl! : mode === "local" ? EMBEDDED_SERVER_SENTINEL : customUrl.trim();
+      mode === "seal"
+        ? officialUrl!
+        : mode === "local"
+          ? EMBEDDED_SERVER_SENTINEL
+          : normalizeCustomUrl(customUrl.trim());
     if (!chosen || busy) return;
     setError(null);
-    // A malformed custom URL (missing scheme, a typo, plain garbage) used
-    // to sail through here and only fail later, on the name-entry screen,
-    // as a raw "builder error" with no way back to fix it. Catching it
-    // here, right where it was typed, means a real error message and
-    // nothing to undo.
+    // Catch a malformed custom URL here, not later on the name-entry
+    // screen as an unrecoverable "builder error".
     if (mode === "custom" && chosen !== EMBEDDED_SERVER_SENTINEL) {
       try {
         new URL(chosen);
       } catch {
-        setError("That doesn't look like a valid URL. Check for a typo, and make sure it starts with https:// or http://.");
+        setError("That doesn't look like a valid URL. Check for a typo.");
         return;
       }
     }
@@ -131,8 +142,17 @@ export function ServerChoice({ onChosen }: ServerChoiceProps) {
         >
           {busy ? "Connecting…" : "Continue"}
         </button>
+        {onCancel && (
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="mt-2 w-full rounded-md py-2 text-sm text-text-muted hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Cancel
+          </button>
+        )}
         <p className="mt-3 text-xs text-text-faint">
-          You can change this later in Settings, it takes effect the next time you start Seal.
+          You can change this later in Settings, it takes effect next time you sign in.
         </p>
       </div>
     </div>

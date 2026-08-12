@@ -39,6 +39,10 @@ interface ChatPaneProps {
    * flip that, only set for a DM, same as `onCall`. */
   blocked?: boolean;
   onToggleBlock?: () => Promise<void>;
+  /** Returns to the conversation list — only rendered (and only needed)
+   * on mobile, where the list and the open conversation share one screen
+   * instead of sitting side by side. */
+  onBack?: () => void;
 }
 
 function BlockIcon() {
@@ -160,6 +164,7 @@ export function ChatPane({
   onCall,
   blocked,
   onToggleBlock,
+  onBack,
 }: ChatPaneProps) {
   const draft = useChatStore((s) => s.drafts[conversationId]?.body ?? "");
   const pendingAttachment = useChatStore((s) => s.drafts[conversationId]?.attachment ?? null);
@@ -239,6 +244,17 @@ export function ChatPane({
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col bg-ink">
       <div className="flex items-center gap-2.5 border-b border-border px-5 py-3.5">
+        {onBack && (
+          <button
+            onClick={onBack}
+            aria-label="Back to conversations"
+            className="-ml-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted hover:bg-surface-raised hover:text-text active:scale-90 md:hidden"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
         <CipherSeal status={sealStatus} size={18} />
         <div className="min-w-0 flex-1">
           <h2 className="truncate font-display text-[15px] font-semibold text-text">{title}</h2>

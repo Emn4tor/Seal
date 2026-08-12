@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { api, onChatEvent, onContactsUpdated, onGroupsUpdated } from "./lib/tauri";
+import { api, EMBEDDED_SERVER_SENTINEL, onChatEvent, onContactsUpdated, onGroupsUpdated } from "./lib/tauri";
 import { useChatStore } from "./store/useChatStore";
 import { Onboarding } from "./components/Onboarding";
 import { AccountPicker } from "./components/AccountPicker";
+import { JoinViaPairing } from "./components/JoinViaPairing";
 import { ServerChoice } from "./components/ServerChoice";
 import { Sidebar } from "./components/Sidebar";
 import { ConversationList } from "./components/ConversationList";
@@ -34,7 +35,14 @@ import { getUpdateAutoCheckEnabled, getUpdateAutoInstallEnabled } from "./lib/up
 const TOAST_LIFETIME_MS = 6000;
 
 export type OpenModal = "add-contact" | "create-group" | "invite" | "create-channel" | "update-available" | "up-to-date" | null;
-export type Phase = "loading" | "boot-error" | "choose-server" | "onboarding" | "picker" | "ready";
+export type Phase =
+  | "loading"
+  | "boot-error"
+  | "choose-server"
+  | "onboarding"
+  | "picker"
+  | "join-pairing"
+  | "ready";
 const TUTORIAL_SEEN_KEY = "seal-tutorial-seen";
 
 /** Whether `conversationId` is the one currently open on screen — the same
@@ -48,19 +56,18 @@ function isConversationOpen(conversationId: string): boolean {
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("loading");
+  const [isMobile, setIsMobile] = useState(false);
   const [splashDone, setSplashDone] = useState(false);
   const [bootError, setBootError] = useState<string | null>(null);
-  const [serverUrl, setServerUrl] = useState<string | null>(null);
-  // The raw choice as saved/passed to `startBackend` — e.g. the literal
-  // "embedded" sentinel — as opposed to `serverUrl`, which is always the
-  // *resolved* connectable URL (`start_backend` turns "embedded" into a
-  // real `http://127.0.0.1:47100`-style address). Settings' "change
-  // server" flow needs this raw form: pre-filling and re-saving the
-  // resolved URL instead of the sentinel silently converts "use the local
-  // embedded server" into a hardcoded address nothing will be listening on
-  // the next time the embedded server picks a fresh port/needs restarting.
-  const [savedServerChoice, setSavedServerChoice] = useState<string | null>(null);
+  // The server just picked on "choose a server", pending use by whatever
+  // asked for it. Not a device-wide "current server": each account holds
+  // its own.
+  const [pendingServerUrl, setPendingServerUrl] = useState<string | null>(null);
+  const [pendingServerPurpose, setPendingServerPurpose] = useState<"onboarding" | "join-pairing">(
+    "onboarding",
+  );
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
+  const [activeAccountDirectoryUrl, setActiveAccountDirectoryUrl] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [onboardingMode, setOnboardingMode] = useState<"first" | "add">("first");
   const [onboardingReturnPhase, setOnboardingReturnPhase] = useState<Phase>("picker");
@@ -175,7 +182,7 @@ export default function App() {
     try {
       setOnlineStatus(await api.getContactsOnlineStatus());
     } catch {
-      // I lowkey dont care if this fails lol
+      // Best-effort; a failed refresh here isn't worth surfacing.
     }
   }
 
@@ -204,15 +211,21 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (getUpdateAutoCheckEnabled()) {
-      checkUpdates()
-    }
+    // Wait for the platform check before deciding: the updater plugin
+    // isn't compiled in on mobile, so there's nothing to check there.
+    api.isMobile().then((mobile) => {
+      setIsMobile(mobile);
+      if (!mobile && getUpdateAutoCheckEnabled()) {
+        checkUpdates();
+      }
+    });
     // Once at startup only, not whenever `checkUpdates` is recreated.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function finishBootWithAccount(account: AccountSummary, isNewAccount: boolean) {
     setActiveAccountId(account.account_id);
+    setActiveAccountDirectoryUrl(account.directory_url);
     setUserId(account.user_id);
     setDisplayName(account.display_name);
     // Backend defaults to sharing online status; re-assert the user's
@@ -225,83 +238,73 @@ export default function App() {
     }
   }
 
-  async function bootAccounts(resolvedServerUrl: string) {
-    const decision = await api.resolveBootAccount();
-    switch (decision.action) {
-      case "resume":
-        await finishBootWithAccount(
-          await api.resumeAccount(resolvedServerUrl, decision.account.account_id),
-          false,
-        );
-        break;
-      case "createWithName":
-        await finishBootWithAccount(
-          await api.createAccount(resolvedServerUrl, decision.display_name),
-          true,
-        );
-        break;
-      case "needsFirstAccount":
-        setOnboardingMode("first");
-        setPhase("onboarding");
-        break;
-      case "needsPicker":
-        setAccounts(decision.accounts);
-        setPhase("picker");
-        break;
-    }
-  }
-
   async function handleServerChosen(url: string) {
-    const resolved = await api.startBackend(url);
-    setServerUrl(resolved);
-    setSavedServerChoice(url);
-    await bootAccounts(resolved);
+    setPendingServerUrl(url);
+    setPhase(pendingServerPurpose === "join-pairing" ? "join-pairing" : "onboarding");
   }
 
-  // Retries because `AppPaths` (and so `get_saved_server_url`) becomes
-  // available essentially immediately after startup, but not provably
-  // before this effect's first tick — rather than assume the exact
-  // ordering, poll briefly the same way the rest of this bootstrap does.
-  //
-  // Everything past that retry loop is wrapped in a try/catch: this used to
-  // let any failure here (a stale connection after the window was
-  // backgrounded/asleep a while, a directory server that's briefly
-  // unreachable, etc.) leave `phase` stuck at "loading" forever with no
-  // error and no way to recover short of force-quitting. Now a failure
-  // lands on a real screen with a retry button instead.
-  async function bootFromSavedServer(isCancelled: () => boolean) {
-    let saved: string | null = null;
+  // `resolveBootAccount` is a local read, always fast. Actually resuming
+  // is fallible per-account (own directory server), so a failure falls
+  // back to the picker instead of blocking the whole app.
+  async function bootFromLocalState(isCancelled: () => boolean) {
+    let decision: Awaited<ReturnType<typeof api.resolveBootAccount>> | null = null;
     for (let attempt = 0; attempt < 200 && !isCancelled(); attempt++) {
       try {
-        saved = await api.getSavedServerUrl();
+        decision = await api.resolveBootAccount();
         break;
       } catch {
         await new Promise((r) => setTimeout(r, 100));
       }
     }
-    if (isCancelled()) return;
+    if (isCancelled() || !decision) return;
 
-    if (!saved) {
-      setPhase("choose-server");
-      return;
-    }
-
-    try {
-      const resolved = await api.startBackend(saved);
-      if (isCancelled()) return;
-      setServerUrl(resolved);
-      setSavedServerChoice(saved);
-      await bootAccounts(resolved);
-    } catch (err) {
-      if (isCancelled()) return;
-      setBootError(String(err));
-      setPhase("boot-error");
+    switch (decision.action) {
+      case "needsFirstAccount":
+        setOnboardingMode("first");
+        setPendingServerPurpose("onboarding");
+        setPhase("choose-server");
+        break;
+      case "needsPicker":
+        setAccounts(decision.accounts);
+        setPhase("picker");
+        break;
+      case "createWithName":
+        // `P2P_CHAT_PROFILE` dev shortcut: always the local embedded server.
+        try {
+          await finishBootWithAccount(
+            await api.createAccount(EMBEDDED_SERVER_SENTINEL, decision.display_name),
+            true,
+          );
+        } catch (err) {
+          if (isCancelled()) return;
+          setBootError(String(err));
+          setPhase("boot-error");
+        }
+        break;
+      case "resume":
+        try {
+          await finishBootWithAccount(await api.resumeAccount(decision.account.account_id), false);
+        } catch (err) {
+          if (isCancelled()) return;
+          try {
+            const state = await api.listAccounts();
+            if (isCancelled()) return;
+            setAccounts(state.accounts);
+            setPickerError(`Couldn't connect ${decision.account.display_name}: ${String(err)}`);
+            setPhase("picker");
+          } catch (listErr) {
+            if (isCancelled()) return;
+            setBootError(String(listErr));
+            setPhase("boot-error");
+          }
+        }
+        break;
     }
   }
 
   useEffect(() => {
     let cancelled = false;
-    bootFromSavedServer(() => cancelled);
+    bootFromLocalState(() => cancelled);
     return () => {
       cancelled = true;
     };
@@ -311,27 +314,48 @@ export default function App() {
   function handleRetryBoot() {
     setBootError(null);
     setPhase("loading");
-    bootFromSavedServer(() => false);
+    bootFromLocalState(() => false);
   }
 
   async function handleCreateAccount(name: string) {
-    if (!serverUrl) return;
-    await finishBootWithAccount(await api.createAccount(serverUrl, name), true);
+    if (!pendingServerUrl) return;
+    await finishBootWithAccount(await api.createAccount(pendingServerUrl, name), true);
   }
 
+  // A new account picks its own server, not any other account's.
   function startAddAccount(returnTo: Phase) {
     setShowSettings(false);
     setOnboardingReturnPhase(returnTo);
     setOnboardingMode("add");
-    setPhase("onboarding");
+    setPendingServerPurpose("onboarding");
+    setPhase("choose-server");
+  }
+
+  function startJoinViaPairing(returnTo: Phase) {
+    setShowSettings(false);
+    setOnboardingReturnPhase(returnTo);
+    setPendingServerPurpose("join-pairing");
+    setPhase("choose-server");
+  }
+
+  // The ServerChoice screen that led here just set a server seconds ago,
+  // so unlike `startJoinViaPairing`, don't re-ask for one.
+  function startJoinViaPairingFromOnboarding() {
+    setOnboardingReturnPhase("onboarding");
+    setPendingServerPurpose("join-pairing");
+    setPhase("join-pairing");
+  }
+
+  async function handleJoinedViaPairing(account: AccountSummary) {
+    // Not a new identity, so no tutorial; history arrives via Sync later.
+    await finishBootWithAccount(account, false);
   }
 
   async function handleChooseAccount(account: AccountSummary) {
-    if (!serverUrl) return;
     setPickerBusy(true);
     setPickerError(null);
     try {
-      await finishBootWithAccount(await api.resumeAccount(serverUrl, account.account_id), false);
+      await finishBootWithAccount(await api.resumeAccount(account.account_id), false);
     } catch (err) {
       setPickerError(String(err));
       setPickerBusy(false);
@@ -339,19 +363,20 @@ export default function App() {
   }
 
   async function handleSwitchAccount(account: AccountSummary) {
-    if (!serverUrl) return;
     resetChatStore();
-    await finishBootWithAccount(await api.resumeAccount(serverUrl, account.account_id), false);
+    await finishBootWithAccount(await api.resumeAccount(account.account_id), false);
     setShowSettings(false);
   }
 
   async function afterAccountRemoved() {
     resetChatStore();
     setActiveAccountId(null);
+    setActiveAccountDirectoryUrl(null);
     const state = await api.listAccounts();
     if (state.accounts.length === 0) {
       setOnboardingMode("first");
-      setPhase("onboarding");
+      setPendingServerPurpose("onboarding");
+      setPhase("choose-server");
     } else {
       setAccounts(state.accounts);
       setPhase("picker");
@@ -730,7 +755,7 @@ export default function App() {
 
   if (phase === "loading") {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-ink">
+      <div className="flex h-full flex-col items-center justify-center gap-4 bg-ink">
         <CipherSeal status="connecting" size={40} />
         <p className="text-sm text-text-faint">Waking up…</p>
       </div>
@@ -739,7 +764,7 @@ export default function App() {
 
   if (phase === "boot-error") {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-ink px-6 text-center">
+      <div className="flex h-full flex-col items-center justify-center gap-4 bg-ink px-6 text-center">
         <CipherSeal status="idle" size={32} />
         <p className="max-w-sm text-sm text-text-muted">Couldn't reconnect: {bootError}</p>
         <button
@@ -753,7 +778,16 @@ export default function App() {
   }
 
   if (phase === "choose-server") {
-    return <ServerChoice onChosen={handleServerChosen} />;
+    return (
+      <ServerChoice
+        onChosen={handleServerChosen}
+        onCancel={
+          onboardingMode === "add" || pendingServerPurpose === "join-pairing"
+            ? () => setPhase(onboardingReturnPhase)
+            : undefined
+        }
+      />
+    );
   }
 
   if (phase === "onboarding") {
@@ -770,6 +804,9 @@ export default function App() {
               // recovery but restarting the app.
               () => setPhase("choose-server")
         }
+        onJoinViaPairing={
+          onboardingMode === "first" ? startJoinViaPairingFromOnboarding : undefined
+        }
       />
     );
   }
@@ -782,6 +819,17 @@ export default function App() {
         error={pickerError}
         onChoose={handleChooseAccount}
         onAddAnother={() => startAddAccount("picker")}
+        onJoinViaPairing={() => startJoinViaPairing("picker")}
+      />
+    );
+  }
+
+  if (phase === "join-pairing") {
+    return (
+      <JoinViaPairing
+        serverUrl={pendingServerUrl ?? ""}
+        onJoined={handleJoinedViaPairing}
+        onCancel={() => setPhase(onboardingReturnPhase)}
       />
     );
   }
@@ -791,7 +839,7 @@ export default function App() {
     // successful account load — but fall back to the picker/onboarding
     // decision rather than rendering a broken main view.
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-ink">
+      <div className="flex h-full flex-col items-center justify-center gap-4 bg-ink">
         <CipherSeal status="connecting" size={40} />
         <p className="text-sm text-text-faint">Waking up…</p>
       </div>
@@ -833,89 +881,102 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
-      <Sidebar
-        groups={groups}
-        selected={selected}
-        unread={unread}
-        onSelectDms={() => select(contacts[0] ? { kind: "dm", userId: contacts[0].user_id } : null)}
-        onSelectGroup={selectFirstChannel}
-        onCreateGroup={() => setOpenModal("create-group")}
-        onOpenSettings={() => setShowSettings(true)}
-      />
-
-      <ConversationList
-        mode={rail}
-        contacts={contacts}
-        selected={selected}
-        unread={unread}
-        activeGroup={activeGroup}
-        voicePresence={voicePresence}
-        onlineStatus={onlineStatus}
-        currentUserId={userId}
-        onSelectContact={(userId) => select({ kind: "dm", userId })}
-        onSelectGroupChannel={(channelId) =>
-          selected?.kind === "group" && select({ kind: "group", groupId: selected.groupId, channelId })
-        }
-        onAddContact={() => setOpenModal("add-contact")}
-        onInvite={() => setOpenModal("invite")}
-        onCreateChannel={(kind) => {
-          setCreateChannelKind(kind);
-          setOpenModal("create-channel");
-        }}
-        onLeaveGroup={handleLeaveGroup}
-        onRemoveContact={handleRemoveContact}
-      />
-
-      {selected?.kind === "group" && activeChannel?.kind === "voice" ? (
-        <VoiceCallPanel
-          key={`${selected.groupId}:${selected.channelId}`}
-          groupId={selected.groupId}
-          channelId={selected.channelId}
-          channelName={activeChannel.name}
-          currentUserId={userId!}
-          joined={
-            joinedVoiceChannel?.groupId === selected.groupId &&
-            joinedVoiceChannel?.channelId === selected.channelId
-          }
-          onJoin={() => handleJoinVoiceChannel(selected.groupId, selected.channelId)}
-          onLeave={handleLeaveVoiceChannel}
+    <div className="flex h-full w-full overflow-hidden">
+      {/* Below `md`, the browse pane (server rail + conversation list) and
+          the open conversation share one screen instead of sitting side by
+          side — there's no room for both at once on a phone. Which one
+          shows is driven by `selected`, the same state that already
+          decides what's open; no separate "which screen" state needed. */}
+      <div className={selected ? "hidden shrink-0 md:flex" : "flex shrink-0"}>
+        <Sidebar
+          groups={groups}
+          selected={selected}
+          unread={unread}
+          onSelectDms={() => select(contacts[0] ? { kind: "dm", userId: contacts[0].user_id } : null)}
+          onSelectGroup={selectFirstChannel}
+          onCreateGroup={() => setOpenModal("create-group")}
+          onOpenSettings={() => setShowSettings(true)}
         />
-      ) : chatConversationId ? (
-        <ChatPane
-          conversationId={chatConversationId}
-          title={chatTitle}
-          subtitle={chatSubtitle}
-          sealStatus={sealStatus}
-          messages={messagesByConversation[chatConversationId] ?? []}
-          currentUserId={userId}
-          isGroup={selected?.kind === "group"}
+
+        <ConversationList
+          mode={rail}
           contacts={contacts}
-          loadError={messagesError}
-          placeholder="No messages yet. Say hello — it's sealed before it leaves this device."
-          onCall={selected?.kind === "dm" ? () => handleStartCall(selected.userId) : undefined}
-          blocked={
-            selected?.kind === "dm" && blockedPeer?.userId === selected.userId ? blockedPeer.blocked : undefined
+          selected={selected}
+          unread={unread}
+          activeGroup={activeGroup}
+          voicePresence={voicePresence}
+          onlineStatus={onlineStatus}
+          currentUserId={userId}
+          onSelectContact={(userId) => select({ kind: "dm", userId })}
+          onSelectGroupChannel={(channelId) =>
+            selected?.kind === "group" && select({ kind: "group", groupId: selected.groupId, channelId })
           }
-          onToggleBlock={selected?.kind === "dm" ? handleToggleBlock : undefined}
-          onSend={async (body, attachment) => {
-            if (selected?.kind === "dm") await api.sendDirectMessage(selected.userId, body, attachment);
-            else if (selected?.kind === "group")
-              await api.sendGroupMessage(selected.groupId, selected.channelId, body, attachment);
-            appendMessage(chatConversationId!, {
-              sender_user_id: userId,
-              body,
-              attachment,
-              sent_at: Date.now() / 1000,
-            });
+          onAddContact={() => setOpenModal("add-contact")}
+          onInvite={() => setOpenModal("invite")}
+          onCreateChannel={(kind) => {
+            setCreateChannelKind(kind);
+            setOpenModal("create-channel");
           }}
+          onLeaveGroup={handleLeaveGroup}
+          onRemoveContact={handleRemoveContact}
         />
-      ) : (
-        <EmptyChatPane />
-      )}
+      </div>
+
+      <div className={selected ? "flex min-w-0 flex-1" : "hidden min-w-0 flex-1 md:flex"}>
+        {selected?.kind === "group" && activeChannel?.kind === "voice" ? (
+          <VoiceCallPanel
+            key={`${selected.groupId}:${selected.channelId}`}
+            groupId={selected.groupId}
+            channelId={selected.channelId}
+            channelName={activeChannel.name}
+            currentUserId={userId!}
+            joined={
+              joinedVoiceChannel?.groupId === selected.groupId &&
+              joinedVoiceChannel?.channelId === selected.channelId
+            }
+            onJoin={() => handleJoinVoiceChannel(selected.groupId, selected.channelId)}
+            onLeave={handleLeaveVoiceChannel}
+            onBack={() => select(null)}
+          />
+        ) : chatConversationId ? (
+          <ChatPane
+            conversationId={chatConversationId}
+            title={chatTitle}
+            subtitle={chatSubtitle}
+            sealStatus={sealStatus}
+            messages={messagesByConversation[chatConversationId] ?? []}
+            currentUserId={userId}
+            isGroup={selected?.kind === "group"}
+            contacts={contacts}
+            loadError={messagesError}
+            placeholder="No messages yet. Say hello — it's sealed before it leaves this device."
+            onCall={selected?.kind === "dm" ? () => handleStartCall(selected.userId) : undefined}
+            blocked={
+              selected?.kind === "dm" && blockedPeer?.userId === selected.userId ? blockedPeer.blocked : undefined
+            }
+            onToggleBlock={selected?.kind === "dm" ? handleToggleBlock : undefined}
+            onBack={() => select(null)}
+            onSend={async (body, attachment) => {
+              if (selected?.kind === "dm") await api.sendDirectMessage(selected.userId, body, attachment);
+              else if (selected?.kind === "group")
+                await api.sendGroupMessage(selected.groupId, selected.channelId, body, attachment);
+              appendMessage(chatConversationId!, {
+                sender_user_id: userId,
+                body,
+                attachment,
+                sent_at: Date.now() / 1000,
+              });
+            }}
+          />
+        ) : (
+          <EmptyChatPane />
+        )}
+      </div>
 
       {activeGroup && (
-        <MemberList group={activeGroup} currentUserId={userId} onRemoveMember={handleRemoveMember} />
+        <div className="hidden md:flex">
+          <MemberList group={activeGroup} currentUserId={userId} onRemoveMember={handleRemoveMember} />
+        </div>
       )}
 
       {openModal === "add-contact" && (
@@ -986,7 +1047,12 @@ export default function App() {
             setDisplayName(name);
           }}
           networkStatus={networkStatus}
-          savedServerChoice={savedServerChoice}
+          directoryUrl={activeAccountDirectoryUrl}
+          onChangeDirectoryServer={async (url) => {
+            if (!activeAccountId) return;
+            await api.setAccountDirectoryServer(activeAccountId, url);
+            setActiveAccountDirectoryUrl(url);
+          }}
           onClose={() => setShowSettings(false)}
           onPurge={handlePurge}
           onOpenTutorial={() => setShowTutorial(true)}
@@ -997,6 +1063,7 @@ export default function App() {
           onRemoveCurrentAccount={handleRemoveCurrentAccount}
           setOpenModal={setOpenModal}
           notify={notify}
+          isMobile={isMobile}
         />
       )}
       {showTutorial && <TutorialWizard userId={userId} onClose={closeTutorial} />}

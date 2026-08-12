@@ -72,7 +72,7 @@ export function Sidebar({ groups, selected, unread, onSelectDms, onSelectGroup, 
 
       <div className="my-1 h-px w-8 bg-border" />
 
-      <div className="flex flex-1 flex-col items-center gap-2 overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto">
         {groups.map((g) => (
           <RailButton
             key={g.group_id}

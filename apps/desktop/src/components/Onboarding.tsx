@@ -9,6 +9,9 @@ interface OnboardingProps {
   mode?: "first" | "add";
   onSubmit: (displayName: string) => Promise<void>;
   onCancel?: () => void;
+  /** Only offered for `mode === "first"` — "add" already has a device
+   * with other accounts, indistinguishable from just switching once paired. */
+  onJoinViaPairing?: () => void;
 }
 
 const promises = [
@@ -26,7 +29,7 @@ const promises = [
   },
 ];
 
-export function Onboarding({ mode = "first", onSubmit, onCancel }: OnboardingProps) {
+export function Onboarding({ mode = "first", onSubmit, onCancel, onJoinViaPairing }: OnboardingProps) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -130,11 +133,21 @@ export function Onboarding({ mode = "first", onSubmit, onCancel }: OnboardingPro
                 {isAdd ? "Cancel" : "Change server"}
               </button>
             )}
+            {!isAdd && onJoinViaPairing && (
+              <button
+                type="button"
+                onClick={onJoinViaPairing}
+                disabled={busy}
+                className="mt-1 w-full rounded-md py-2 text-sm text-text-muted hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Already have an account? Join with a QR code
+              </button>
+            )}
             <p className="mt-3 text-xs text-text-faint">
               This creates a private key that never leaves this device. There&rsquo;s no
-              password to remember and no account to recover. That cuts both ways: there&rsquo;s
-              no export or backup either, so losing this device means losing this identity
-              and everything in it for good.
+              password to remember and no account to recover from scratch — the only way to
+              keep an identity across a lost device is to have paired another one to it
+              beforehand (Settings → Devices), before it&rsquo;s gone.
             </p>
           </form>
         </div>

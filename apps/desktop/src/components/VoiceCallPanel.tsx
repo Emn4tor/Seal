@@ -25,6 +25,8 @@ interface VoiceCallPanelProps {
   joined: boolean;
   onJoin: () => Promise<void>;
   onLeave: () => Promise<void>;
+  /** Same mobile-only "back to the list" affordance as `ChatPane`'s. */
+  onBack?: () => void;
 }
 
 const SPEAKING_POLL_MS = 200;
@@ -104,6 +106,7 @@ export function VoiceCallPanel({
   joined,
   onJoin,
   onLeave,
+  onBack,
 }: VoiceCallPanelProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -254,6 +257,17 @@ export function VoiceCallPanel({
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col bg-ink">
       <div className="flex items-center gap-2.5 border-b border-border px-5 py-3.5">
+        {onBack && (
+          <button
+            onClick={onBack}
+            aria-label="Back to conversations"
+            className="-ml-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted hover:bg-surface-raised hover:text-text active:scale-90 md:hidden"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="text-text-faint">
           <path d="M11 5 6 9H3v6h3l5 4V5Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
           <path d="M16 9a4 4 0 0 1 0 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />

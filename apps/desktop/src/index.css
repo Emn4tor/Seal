@@ -39,9 +39,40 @@
 }
 
 html,
-body,
+body {
+  /* `100%` chains to the layout viewport, which doesn't shrink when the
+     iOS keyboard opens — only the *visual* viewport does. `100dvh` tracks
+     that instead, so the root actually resizes with the keyboard. */
+  height: 100dvh;
+}
+
 #root {
+  /* Deliberately `100%` of `body`'s padded box, not another `100dvh` — an
+     absolute unit here or below (e.g. `h-dvh` on an App.tsx screen) would
+     ignore that padding and get clipped by `body`'s `overflow: hidden`. */
   height: 100%;
+}
+
+html {
+  /* Kills pinch and double-tap zoom in the WKWebView; the viewport meta
+     tag alone isn't reliably honored there. */
+  touch-action: manipulation;
+}
+
+html,
+body {
+  /* `overflow: hidden` alone doesn't stop WKWebView's native elastic
+     rubber-band overscroll, which can briefly reveal whatever's underneath
+     a `position: fixed` overlay (e.g. SettingsPanel) regardless of z-index. */
+  overscroll-behavior: none;
+}
+
+body {
+  /* WKWebView runs edge-to-edge under the notch/home indicator (opted into
+     by `viewport-fit=cover` in index.html). Insetting once here as padding
+     (comes out of `body`'s own `100dvh`) keeps every screen tappable. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
 }
 
 body {
@@ -51,6 +82,15 @@ body {
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+}
+
+/* While the QR scanner (`JoinViaPairing`) is running with `windowed: true`,
+   the native camera preview is drawn *behind* the webview — an opaque page
+   background would hide it completely, so this punches through everything
+   from `body` down to `#root` for exactly as long as a scan is active. */
+body.qr-scan-active,
+body.qr-scan-active #root {
+  background: transparent;
 }
 
 ::selection {
@@ -93,6 +133,16 @@ input[type="range"] {
   transition-property: color, background-color, border-color, box-shadow, opacity, transform;
   transition-duration: 150ms;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* iOS zooms the page on focus if an input's font-size is under 16px.
+   Scoped to touch devices so desktop sizing is untouched. */
+@media (hover: none) and (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

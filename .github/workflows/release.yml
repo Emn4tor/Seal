@@ -92,6 +92,11 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-22.04
+    # `if:` conditionals can't reference `secrets` directly (GitHub Actions
+    # rejects the whole workflow file with "Unrecognized named-value:
+    # 'secrets'" at parse time) — route it through `env` first instead.
+    env:
+      HAS_ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -139,7 +144,7 @@ jobs:
       # debug-signed APK otherwise, which installs fine for sideloading/
       # testing but isn't what you'd want to hand out as a public release.
       - name: Configure release signing
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: ${{ env.HAS_ANDROID_KEYSTORE == 'true' }}
         working-directory: apps/desktop/src-tauri/gen/android
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -153,14 +158,14 @@ jobs:
           PROPS
 
       - name: Build APK (release-signed)
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: ${{ env.HAS_ANDROID_KEYSTORE == 'true' }}
         working-directory: apps/desktop
         env:
           NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
         run: npm run tauri android build -- --apk --target aarch64 --ci
 
       - name: Build APK (debug-signed, no release keystore configured)
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 == '' }}
+        if: ${{ env.HAS_ANDROID_KEYSTORE == 'false' }}
         working-directory: apps/desktop
         env:
           NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973

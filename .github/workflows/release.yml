@@ -226,6 +226,30 @@ jobs:
       # step switched to a real `--export-method`, and an upload step
       # added after it (the `publish-android` job above is the template
       # for "upload to the same draft release via `gh release upload`").
+      #
+      # `tauri ios build` only runs a plain `xcodebuild build` before the
+      # real `archive` when neither `--no-sign` nor `--archive-only` is
+      # set (see tauri-cli's ios/build.rs) — with `--no-sign` it always
+      # skips straight to `archive`. On a completely fresh checkout (no
+      # prior local build to have already populated `Externals/`), that
+      # first-ever `xcodebuild archive` fails with "libapp.a couldn't be
+      # opened" even though the "Build Rust Code" script phase correctly
+      # declares it as an output (`outputPaths` in project.pbxproj) and
+      # is marked to always re-run (`alwaysOutOfDate = 1`) — a known class
+      # of Xcode archive-vs-build script-phase-ordering quirk seen in
+      # other cross-compiled-native-library iOS projects. Pre-creating an
+      # empty placeholder at the exact declared output path satisfies
+      # Xcode's build-graph validation up front; the script phase then
+      # overwrites it with the real compiled library before archiving,
+      # exactly as it does at `Externals/{arch}/${CONFIGURATION}/libapp.a`
+      # for a from-scratch signed local build too.
+      - name: Pre-create Externals/libapp.a placeholder (see comment above)
+        run: |
+          mkdir -p apps/desktop/src-tauri/gen/apple/Externals/arm64/release
+          mkdir -p apps/desktop/src-tauri/gen/apple/Externals/x86_64/release
+          touch apps/desktop/src-tauri/gen/apple/Externals/arm64/release/libapp.a
+          touch apps/desktop/src-tauri/gen/apple/Externals/x86_64/release/libapp.a
+
       - name: Build and archive (unsigned, validates the build only)
         working-directory: apps/desktop
         env:

@@ -36,6 +36,9 @@
     "macOS": {
       "signingIdentity": "-",
       "entitlements": "entitlements.plist"
+    },
+    "android": {
+      "minSdkVersion": 26
     }
   },
   "plugins": {

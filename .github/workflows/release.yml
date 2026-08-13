@@ -75,6 +75,13 @@ jobs:
           args: ${{ matrix.args }}
           releaseDraft: true
           prerelease: false
+          # The updater reads each platform's signature inline from
+          # latest.json (see its own "signature" field) — it never fetches
+          # a standalone .sig file. Uploading them as separate release
+          # assets anyway (tauri-action's default) just clutters the
+          # release page with files no one downloads; this doesn't touch
+          # latest.json's generation at all.
+          uploadUpdaterSignatures: false
 
   # Builds and uploads to the same draft release `publish-tauri` created.
   # Unlike that job, this one doesn't go through `tauri-action` at all: its
@@ -216,18 +223,28 @@ jobs:
       # docs/RELEASING.md's Apple signing section — same $99/yr constraint
       # as macOS notarization above, and iOS is strict about it in a way
       # macOS isn't: there's no ad-hoc-signed fallback that installs on a
-      # real device without one. `--no-sign --archive-only` builds and
-      # archives without ever needing a signing identity, which is enough
-      # to catch a real compile regression on every release (same value
-      # the `rust` CI job's 3-OS matrix gets), but can't produce an .ipa
-      # anyone could actually install — so this job doesn't upload one.
-      # See docs/RELEASING.md for what to add here once there's a paid
-      # account: a certificate + provisioning profile as secrets, this
-      # step switched to a real `--export-method`, and an upload step
-      # added after it (the `publish-android` job above is the template
-      # for "upload to the same draft release via `gh release upload`").
-      - name: Build and archive (unsigned, validates the build only)
+      # real device without one. `--no-sign` (without `--archive-only`)
+      # still produces a real, downloadable `.ipa` — tauri-cli's own
+      # `create_ipa` just zips the unsigned `.app` into standard Payload/
+      # structure, no signing identity needed — it just isn't installable
+      # as-is; a sideloading tool (AltStore, Sideloadly, etc.) that
+      # re-signs on install is required. See docs/RELEASING.md for what
+      # to add here once there's a paid account: a certificate +
+      # provisioning profile as secrets, a real `--export-method`, and a
+      # signed, directly-installable .ipa.
+      - name: Build and archive (unsigned)
         working-directory: apps/desktop
         env:
           CARGO_BUILD_RUSTC_WRAPPER: ""
-        run: npm run tauri ios build -- --target aarch64 --no-sign --archive-only --ci
+        run: npm run tauri ios build -- --target aarch64 --no-sign --ci
+
+      - name: Rename and upload (unsigned, needs a sideloading tool to install)
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          ipa=$(find apps/desktop/src-tauri/gen/apple -iname '*.ipa' | head -n1)
+          out="Seal-${version}-iOS-unsigned.ipa"
+          cp "$ipa" "$out"
+          gh release upload "v${version}" "$out" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

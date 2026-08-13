@@ -93,9 +93,9 @@ Without a configured keystore, `publish-android` builds a **debug-signed** APK: 
 
 No Google Play developer account needed for this part — a self-signed release keystore is enough for anyone to install the APK directly. **Keep the keystore file itself somewhere safe outside git**: losing it means every future release has to switch to a new signing key, which Android treats as a different app for update purposes.
 
-### iOS: no signed IPA yet
+### iOS: unsigned IPA only, needs a sideloading tool to install
 
-`publish-ios` builds and archives with `--no-sign --archive-only`, which validates the Rust/Xcode build on every release but can't produce an installable `.ipa` — iOS requires a real Apple-issued certificate and provisioning profile to sign *anything* installable, with no ad-hoc equivalent to Android's self-signed keystore. That needs the same paid Apple Developer Program membership as macOS notarization (§5). Once that exists:
+`publish-ios` builds with `--no-sign` and uploads the resulting `.ipa` (`Seal-{version}-iOS-unsigned.ipa`) — tauri-cli's own `create_ipa` just zips the unsigned `.app` into standard Payload/ structure, no certificate needed. It isn't directly installable: iOS requires a real Apple-issued certificate and provisioning profile to sign *anything* installable, with no ad-hoc equivalent to Android's self-signed keystore. A sideloading tool that re-signs on install (AltStore, Sideloadly, etc.) can still install this file. A directly-installable, properly-signed `.ipa` needs the same paid Apple Developer Program membership as macOS notarization (§5). Once that exists:
 
 - Export a Distribution certificate as a base64-encoded `.p12` and add it (plus its password) as secrets, imported into a temporary keychain at the start of the job (`security create-keychain`/`security import`, the standard pattern `tauri-action` itself uses for macOS)
 - Add the matching provisioning profile as a secret, installed into `~/Library/MobileDevice/Provisioning Profiles/`
